@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>lnrsFlightSense — Arlanda  ·  online</title>
+<title>Overhead — Arlanda  ·  online</title>
 <style>
   :root {
     --bg: #05080d;
@@ -315,7 +315,7 @@
 
 <div class="banner">
   <span class="badge">Online  ·  no DVB-T receiver</span>
-  <span class="title" id="banner-title">lnrsFlightSense — Stockholm Arlanda</span>
+  <span class="title" id="banner-title">Overhead — Stockholm Arlanda</span>
   <span class="city-chips" id="city-chips"></span>
   <span class="sub">data via <a href="https://adsb.fi" style="color:var(--text-dim)">adsb.fi</a> — community ADS-B aggregator</span>
 </div>
@@ -444,7 +444,7 @@ radar.addEventListener("click", (ev) => {
     wrap.appendChild(a);
   }
   $("#banner-title").textContent =
-      "lnrsFlightSense — " + CENTRE.name;
+      "Overhead — " + CENTRE.name;
   $("#airport-codes").textContent = CENTRE.icao
       ? (CENTRE.iata + "  ·  " + CENTRE.icao)
       : CENTRE.iata;
@@ -452,7 +452,7 @@ radar.addEventListener("click", (ev) => {
   $("#centre-label").textContent =
       CENTRE.lat.toFixed(2) + ", " + CENTRE.lon.toFixed(2);
   document.title =
-      "lnrsFlightSense — " + CENTRE.name + "  ·  online";
+      "Overhead — " + CENTRE.name + "  ·  online";
 })();
 
 // ---------- math ----------
