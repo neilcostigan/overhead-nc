@@ -17,6 +17,7 @@
     --amber-glow: rgba(255,174,26,0.28);
     --green: #4ade80;
     --red: #ef4444;
+    --cyan: #7dd3fc;
     --mono: ui-monospace, 'JetBrains Mono', Menlo, monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -116,8 +117,53 @@
     -webkit-backdrop-filter: blur(6px);
   }
   .overlay.tl { top: 16px; left: 16px; }
+  .overlay.tr { top: 16px; right: 16px; font-size: 11px; color: var(--text-dim); }
   .overlay.bl { bottom: 16px; left: 16px; }
   .overlay.br { bottom: 16px; right: 16px; font-size: 11px; color: var(--text-dim); }
+
+  /* ---------- ISS widget ---------- */
+  .iss-widget {
+    min-width: 200px;
+  }
+  .iss-widget .head {
+    color: var(--cyan, #7dd3fc);
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .iss-widget .head .dot-iss {
+    width: 6px; height: 6px; border-radius: 3px;
+    background: var(--cyan, #7dd3fc);
+    box-shadow: 0 0 8px var(--cyan, #7dd3fc);
+  }
+  .iss-widget .head.overhead .dot-iss {
+    background: var(--amber);
+    box-shadow: 0 0 8px var(--amber);
+  }
+  .iss-widget .head.overhead { color: var(--amber); }
+  .iss-widget .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .iss-widget .row b { color: var(--text); font-weight: 500; }
+  .iss-widget .badge {
+    margin-top: 6px;
+    display: inline-block;
+    padding: 2px 6px;
+    background: rgba(255,174,26,0.18);
+    border: 1px solid var(--amber);
+    color: var(--amber);
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    border-radius: 2px;
+  }
   .analyse-btn {
     margin-top: 8px;
     background: transparent;
@@ -338,6 +384,19 @@
         <span>centre <b id="centre-label">59.65, 17.92</b></span>  ·
         <span>upd <b id="updated">—</b></span>
       </div>
+    </div>
+
+    <div class="overlay tr iss-widget" id="iss-widget">
+      <div class="head" id="iss-head">
+        <span class="dot-iss"></span>
+        <span>ISS</span>
+      </div>
+      <div class="row"><span>position</span><b id="iss-pos">—</b></div>
+      <div class="row"><span>distance</span><b id="iss-dist">—</b></div>
+      <div class="row"><span>bearing</span><b id="iss-brg">—</b></div>
+      <div class="row"><span>altitude</span><b id="iss-alt">—</b></div>
+      <div class="row"><span>speed</span><b id="iss-spd">—</b></div>
+      <div id="iss-overhead-badge" style="display:none;" class="badge">OVERHEAD  ·  GO  LOOK  UP</div>
     </div>
 
     <div class="overlay br">
@@ -779,10 +838,43 @@ async function runAnalyse() {
   }
 }
 
+// ---------- ISS tracker ----------
+const ISS_POLL_MS = 15000;
+const compassDirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+const compassOf = d => compassDirs[Math.round(d / 22.5) % 16];
+
+async function tickIss() {
+  try {
+    const r = await fetch(
+      `/api/iss?lat=${CENTRE.lat}&lon=${CENTRE.lon}`,
+      { cache: "no-store" });
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById("iss-pos").textContent =
+        `${d.lat.toFixed(2)}, ${d.lon.toFixed(2)}`;
+    document.getElementById("iss-dist").textContent =
+        d.distKm != null ? `${d.distKm.toLocaleString()} km` : "—";
+    document.getElementById("iss-brg").textContent =
+        d.bearingDeg != null ? `${compassOf(d.bearingDeg)} (${d.bearingDeg}°)` : "—";
+    document.getElementById("iss-alt").textContent =
+        d.altitudeKm ? `${Math.round(d.altitudeKm)} km` : "—";
+    document.getElementById("iss-spd").textContent =
+        d.velocityKmh ? `${Math.round(d.velocityKmh).toLocaleString()} km/h` : "—";
+
+    const overhead = !!d.isOverhead;
+    document.getElementById("iss-head").className =
+        overhead ? "head overhead" : "head";
+    document.getElementById("iss-overhead-badge").style.display =
+        overhead ? "" : "none";
+  } catch { /* leave previous values */ }
+}
+
 // ---------- boot ----------
 window.addEventListener("resize", () => requestAnimationFrame(drawRadar));
 tick();
+tickIss();
 setInterval(tick, POLL_MS);
+setInterval(tickIss, ISS_POLL_MS);
 </script>
 </body>
 </html>
