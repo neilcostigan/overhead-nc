@@ -73,13 +73,44 @@ radius still picks up passing transatlantic and European traffic.
 Add more by editing the `CITIES` map at the top of the `<script>` in
 `index.html` — they pop into the banner automatically.
 
+## Per-aircraft detail
+
+Click any aircraft row in the sidebar. An inline card expands underneath
+showing:
+
+- Registration, type and operator — pulled from
+  [hexdb.io](https://hexdb.io) via `/api/aircraft-info`.
+- Scheduled origin / destination — pulled from
+  [adsbdb.com](https://www.adsbdb.com) via `/api/route`.
+- An **Explain** button that calls Gemini and writes a 100-word
+  paragraph about who's flying, what type, and where to.
+
+Both upstream APIs are free, no-auth, generous limits. Both responses
+cache in the serverless function (24 h for aircraft info, 6 h for routes)
+so reopening the same flight doesn't hammer them.
+
+## Enabling Explain (Gemini)
+
+Without a key the Explain button returns a 503 with a friendly message.
+To enable:
+
+1. Get a key at <https://aistudio.google.com/apikey>.
+2. Vercel project → **Settings → Environment Variables** → add
+   `GEMINI_API_KEY` with the key as the value. Pick "All Environments".
+3. Redeploy: any push, or in the dashboard **Deployments → … → Redeploy**.
+4. Optional: also set `GEMINI_MODEL` if you want a model other than the
+   default `gemini-2.5-flash-lite` (e.g. `gemini-2.5-flash` for a better
+   answer at higher cost).
+
+Identical clicks within an hour reuse the cached reply so you can't
+accidentally burn quota.
+
 ## What this is not
 
 Online build deliberately omits:
 
 - the raw Mode-S feed (no local dump1090)
 - persistent history (Vercel functions are stateless)
-- LLM-backed "Explain" (would need a key as a Vercel env var)
 - desktop notifications (browser-only context)
 
 For all of those, use the Java app (`local flight sense with llm`) — it

@@ -64,6 +64,7 @@
     gap: 6px;
   }
   .city-chip {
+    display: inline-block;
     background: transparent;
     border: 1px solid var(--line);
     color: var(--text-faint);
@@ -75,6 +76,7 @@
     text-transform: uppercase;
     cursor: pointer;
     text-decoration: none;
+    user-select: none;
   }
   .city-chip:hover { color: var(--text); }
   .city-chip.active {
@@ -116,6 +118,59 @@
   .overlay.tl { top: 16px; left: 16px; }
   .overlay.bl { bottom: 16px; left: 16px; }
   .overlay.br { bottom: 16px; right: 16px; font-size: 11px; color: var(--text-dim); }
+  .analyse-btn {
+    margin-top: 8px;
+    background: transparent;
+    border: 1px solid var(--amber);
+    color: var(--amber);
+    padding: 6px 12px;
+    border-radius: 3px;
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .analyse-btn:hover { background: rgba(255,174,26,0.1); }
+  .analyse-btn:disabled { opacity: 0.5; cursor: default; }
+
+  .analyse-panel {
+    position: absolute;
+    top: 16px; left: 50%;
+    transform: translateX(-50%);
+    width: min(560px, calc(100% - 32px));
+    background: rgba(5,8,13,0.94);
+    border: 1px solid var(--amber);
+    border-radius: 4px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 10;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+  }
+  .analyse-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--amber);
+  }
+  .analyse-close { cursor: pointer; color: var(--text-faint); }
+  .analyse-close:hover { color: var(--text); }
+  .analyse-text {
+    padding: 14px;
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .analyse-text.error { color: var(--red); }
+  .analyse-text.loading { color: var(--text-faint); font-style: italic; }
   .big-num {
     font-size: 56px;
     line-height: 1;
@@ -196,6 +251,55 @@
   }
   .empty b { display: block; color: var(--text-dim); margin-bottom: 6px; }
 
+  /* ---------- inline detail (expand under selected row) ---------- */
+  .detail {
+    background: var(--bg-elev-2);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 14px 14px;
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .detail .meta-grid {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 4px 10px;
+    margin-bottom: 10px;
+  }
+  .detail .meta-grid .k {
+    color: var(--text-faint);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+  .detail .meta-grid .v { color: var(--text); }
+  .detail .explain-btn {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+    padding: 6px 12px;
+    border-radius: 3px;
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .detail .explain-btn:hover { border-color: var(--amber); color: var(--amber); }
+  .detail .explain-btn:disabled { opacity: 0.5; cursor: default; }
+  .detail .explain-text {
+    margin-top: 10px;
+    padding: 10px;
+    background: var(--bg);
+    border-left: 2px solid var(--amber);
+    color: var(--text-dim);
+    font-size: 11px;
+    white-space: pre-wrap;
+    border-radius: 2px;
+  }
+  .detail .explain-text.loading { color: var(--text-faint); font-style: italic; }
+  .detail .explain-text.error { border-left-color: var(--red); color: var(--red); }
+
   /* ---------- footer ---------- */
   .footer {
     border-top: 1px solid var(--line);
@@ -239,6 +343,14 @@
     <div class="overlay br">
       <div>refresh every <b id="poll-label">5 s</b></div>
       <div>data delay ~2–10 s (aggregator)</div>
+      <button id="analyse-btn" class="analyse-btn">✦  Analyse  the  sky</button>
+    </div>
+    <div id="analyse-panel" class="analyse-panel" style="display:none;">
+      <div class="analyse-head">
+        <span>What's flying right now</span>
+        <span class="analyse-close" id="analyse-close">✕</span>
+      </div>
+      <div class="analyse-text" id="analyse-text">Asking the LLM…</div>
     </div>
   </div>
 
@@ -290,6 +402,28 @@ const radar = $("#radar");
 const ctx = radar.getContext("2d");
 let aircraft = [];
 let selectedHex = null;
+/** [{x, y, hex}] of aircraft drawn last frame — used for radar hit-testing. */
+const drawnHits = [];
+radar.style.cursor = "crosshair";
+radar.addEventListener("click", (ev) => {
+  const rect = radar.getBoundingClientRect();
+  const x = ev.clientX - rect.left;
+  const y = ev.clientY - rect.top;
+  let best = null, bestD2 = 16 * 16;   // 16 px hit radius
+  for (const h of drawnHits) {
+    const dx = h.x - x, dy = h.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) { bestD2 = d2; best = h; }
+  }
+  if (best) {
+    selectedHex = best.hex;
+    render();
+    renderDetail();
+    // Scroll the list to the now-selected row so the inline detail is in view.
+    const row = document.querySelector(`.ac-row[data-hex="${selectedHex}"]`);
+    if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+});
 
 // ---------- city chips ----------
 (function buildChips() {
@@ -301,6 +435,12 @@ let selectedHex = null;
     a.href = "?city=" + key;
     a.textContent = c.iata;
     a.title = c.icao ? (c.name + " (" + c.icao + ")") : c.name;
+    // Belt-and-braces: navigate via JS so the click always works even
+    // if the parent flex container or some CSS quirk eats the link click.
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      location.search = "?city=" + key;
+    });
     wrap.appendChild(a);
   }
   $("#banner-title").textContent =
@@ -417,6 +557,7 @@ function drawRadar() {
 
   // aircraft
   ctx.font = "11px " + getComputedStyle(document.body).fontFamily;
+  drawnHits.length = 0;
   for (const a of aircraft) {
     if (a.distNm > RADIUS_NM) continue;
     const scale = r / RADIUS_NM;
@@ -441,6 +582,7 @@ function drawRadar() {
       ctx.fillStyle = sel ? "#ffae1a" : "#b8c3d4";
       ctx.fillText(cs, x + 8, y + 4);
     }
+    drawnHits.push({ x, y, hex: a.hex });
   }
 }
 
@@ -483,8 +625,158 @@ function drawList() {
     el.addEventListener("click", () => {
       selectedHex = el.dataset.hex;
       render();
+      renderDetail();
     });
   });
+  // Re-show the detail card under the selected row, if any.
+  renderDetail();
+}
+
+/** Insert / refresh an inline detail block under the active row. */
+function renderDetail() {
+  document.querySelectorAll(".detail").forEach(d => d.remove());
+  if (!selectedHex) return;
+  const ac = aircraft.find(a => a.hex === selectedHex);
+  if (!ac) return;
+  const row = document.querySelector(`.ac-row[data-hex="${selectedHex}"]`);
+  if (!row) return;
+
+  const cs = (ac.flight || "").trim();
+  const card = document.createElement("div");
+  card.className = "detail";
+  card.innerHTML = `
+    <div class="meta-grid">
+      <div class="k">callsign</div>     <div class="v">${cs || "(none)"}</div>
+      <div class="k">ICAO24</div>       <div class="v">${(ac.hex || "").toUpperCase()}</div>
+      <div class="k">registration</div> <div class="v" data-reg>loading…</div>
+      <div class="k">type</div>         <div class="v" data-type>loading…</div>
+      <div class="k">operator</div>     <div class="v" data-op>loading…</div>
+      <div class="k">route</div>        <div class="v" data-route>${cs ? "loading…" : "—"}</div>
+    </div>
+    <button class="explain-btn" data-explain>Explain  ✦</button>
+    <div class="explain-text" style="display:none" data-explain-out></div>
+  `;
+  row.insertAdjacentElement("afterend", card);
+  loadAircraftInfo(ac.hex, card);
+  if (cs) loadRoute(cs, card);
+  card.querySelector("[data-explain]").addEventListener("click", () =>
+      runExplain(ac, card));
+}
+
+async function loadAircraftInfo(hex, card) {
+  try {
+    const r = await fetch("/api/aircraft-info?hex=" + encodeURIComponent(hex));
+    const d = await r.json();
+    card.querySelector("[data-reg]").textContent  = d.registration || "—";
+    card.querySelector("[data-type]").textContent = d.type || "—";
+    card.querySelector("[data-op]").textContent   = d.operator || "—";
+  } catch {
+    card.querySelector("[data-reg]").textContent  = "—";
+    card.querySelector("[data-type]").textContent = "—";
+    card.querySelector("[data-op]").textContent   = "—";
+  }
+}
+
+async function loadRoute(callsign, card) {
+  try {
+    const r = await fetch("/api/route?callsign=" + encodeURIComponent(callsign));
+    const d = await r.json();
+    const slot = card.querySelector("[data-route]");
+    if (d.origin && d.destination) {
+      slot.textContent = `${d.origin} → ${d.destination}`
+          + (d.originName && d.destName ? `   (${d.originName} → ${d.destName})` : "");
+    } else {
+      slot.textContent = "—";
+    }
+  } catch {
+    card.querySelector("[data-route]").textContent = "—";
+  }
+}
+
+async function runExplain(ac, card) {
+  const btn = card.querySelector("[data-explain]");
+  const out = card.querySelector("[data-explain-out]");
+  btn.disabled = true;
+  out.style.display = "";
+  out.className = "explain-text loading";
+  out.textContent = "Asking the LLM…";
+  try {
+    const body = {
+      hex: ac.hex,
+      callsign: (ac.flight || "").trim(),
+      lat: ac.lat, lon: ac.lon,
+      altFt: ac.alt_baro,
+      gsKt: ac.gs,
+      trkDeg: ac.track
+    };
+    const r = await fetch("/api/explain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      out.className = "explain-text error";
+      out.textContent = d.error || ("HTTP " + r.status);
+    } else {
+      out.className = "explain-text";
+      out.textContent = d.text + (d.model ? ("\n\n— " + d.model) : "");
+    }
+  } catch (e) {
+    out.className = "explain-text error";
+    out.textContent = String(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------- Analyse the sky ----------
+document.getElementById("analyse-btn").addEventListener("click", runAnalyse);
+document.getElementById("analyse-close").addEventListener("click", () => {
+  document.getElementById("analyse-panel").style.display = "none";
+});
+
+async function runAnalyse() {
+  const btn = document.getElementById("analyse-btn");
+  const panel = document.getElementById("analyse-panel");
+  const out = document.getElementById("analyse-text");
+  panel.style.display = "";
+  out.className = "analyse-text loading";
+  out.textContent = "Asking the LLM about what's in your sky…";
+  btn.disabled = true;
+  try {
+    const payload = {
+      city: CENTRE.name,
+      aircraft: aircraft.map(a => ({
+        hex: a.hex,
+        flight: a.flight,
+        alt_baro: a.alt_baro,
+        gs: a.gs,
+        track: a.track,
+        lat: a.lat,
+        lon: a.lon,
+        distNm: a.distNm
+      }))
+    };
+    const r = await fetch("/api/analyse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      out.className = "analyse-text error";
+      out.textContent = d.error || ("HTTP " + r.status);
+    } else {
+      out.className = "analyse-text";
+      out.textContent = d.text + (d.model ? ("\n\n— " + d.model) : "");
+    }
+  } catch (e) {
+    out.className = "analyse-text error";
+    out.textContent = String(e);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ---------- boot ----------

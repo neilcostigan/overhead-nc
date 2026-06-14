@@ -2,13 +2,9 @@
   "name": "nc-overhead",
   "version": "0.1.0",
   "private": true,
-  "description": "Online-only, ARN/DUB/LHR-centred ADS-B viewer. No local DVB-T receiver — data via adsb.fi.",
+  "description": "Online-only, ARN/DUB/LHR/EXT/CARLOW-centred ADS-B viewer. No local DVB-T receiver — data via adsb.fi.",
   "type": "module",
   "engines": {
     "node": ">=18"
-  },
-  "scripts": {
-    "dev": "vercel dev",
-    "deploy": "vercel --prod"
   }
 }

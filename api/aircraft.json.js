@@ -34,16 +34,41 @@ export default async function handler(req, res) {
     return ok(res, hit.body);
   }
 
+  // adsb.fi's v3 path uses unsigned lat/lon (signed values 404). They've
+  // documented a "minus" prefix workaround on some endpoints but the v3
+  // path uses URL-encoded signed values straight through. encodeURIComponent
+  // keeps the minus sign while making everything URL-safe.
+  const latStr = encodeURIComponent(lat.toFixed(4));
+  const lonStr = encodeURIComponent(lon.toFixed(4));
+  const url = `${UPSTREAM}/lat/${latStr}/lon/${lonStr}/dist/${Math.round(dist)}`;
+
   try {
-    const url = `${UPSTREAM}/lat/${lat.toFixed(4)}/lon/${lon.toFixed(4)}/dist/${Math.round(dist)}`;
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 8000);
     const r = await fetch(url, {
+      signal: ctrl.signal,
       headers: {
         "Accept": "application/json",
-        "User-Agent": "lnrsFlightSense/online (https://github.com/)"
+        "User-Agent": "lnrsFlightSense-online/0.1"
       }
     });
+    clearTimeout(timeoutId);
     if (!r.ok) {
-      res.status(502).json({ error: `upstream ${r.status}`, upstream: url });
+      // Try to read upstream body for diagnostics; cap at 500 chars.
+      let upstreamBody = "";
+      try { upstreamBody = (await r.text()).slice(0, 500); } catch {}
+      console.warn("adsb.fi upstream", r.status, "for", url, "→", upstreamBody);
+      // Don't 502 to the browser — return an empty list with the error
+      // captured so the UI keeps working and we can see what happened in
+      // the response payload.
+      const body = {
+        now: Math.floor(now / 1000),
+        messages: 0,
+        aircraft: [],
+        _upstream: { status: r.status, url, body: upstreamBody }
+      };
+      res.setHeader("X-Cache", "ERROR");
+      res.status(200).json(body);
       return;
     }
     const data = await r.json();
@@ -58,7 +83,14 @@ export default async function handler(req, res) {
     res.setHeader("X-Cache", "MISS");
     ok(res, body);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    console.warn("aircraft.json error for", url, "→", e);
+    res.status(200).json({
+      now: Math.floor(now / 1000),
+      messages: 0,
+      aircraft: [],
+      _error: String(e),
+      _upstream: url
+    });
   }
 }
 
