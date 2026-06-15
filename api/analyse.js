@@ -14,7 +14,7 @@
 //
 // Requires GEMINI_API_KEY env var (same one used by /api/explain).
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+import { callGemini } from "./_gemini.js";
 
 const ADSBDB_URL = "https://api.adsbdb.com/v0/callsign";
 
@@ -133,30 +133,21 @@ Stay factual; if you can't identify something, say so.
 Aircraft (top ${top.length} of ${aircraft.length}):
 ${lines}`;
 
-  try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 600, temperature: 0.3 }
-      })
+  const result = await callGemini(prompt, { key, maxTokens: 600 });
+  if (result.error) {
+    return res.status(502).json({
+      error: result.error,
+      status: result.status,
+      body: result.body,
+      model: result.model
     });
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      return res.status(502).json({
-        error: `gemini ${r.status}`, body: body.slice(0, 400)
-      });
-    }
-    const data = await r.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text
-              || "(empty response)";
-    cache.set(ckey, { ts: now, text, model: MODEL });
-    res.setHeader("X-Cache", "MISS");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.status(200).json({ text, model: MODEL });
-  } catch (e) {
-    res.status(500).json({ error: String(e) });
   }
+  cache.set(ckey, { ts: now, text: result.text, model: result.model });
+  res.setHeader("X-Cache", "MISS");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.status(200).json({
+    text: result.text,
+    model: result.model,
+    enriched: enrichedCount
+  });
 }
