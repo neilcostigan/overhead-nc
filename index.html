@@ -748,6 +748,25 @@
     </div>
 
     <div class="settings-section">
+      <div class="settings-section-head">Live data</div>
+      <label class="field">
+        <span>Aircraft poll</span>
+        <select id="settings-poll">
+          <option value="5">Every 5 s  ·  tight tracking</option>
+          <option value="15">Every 15 s</option>
+          <option value="30">Every 30 s  ·  default</option>
+          <option value="60">Every 1 min</option>
+          <option value="120">Every 2 min  ·  ambient</option>
+        </select>
+      </label>
+      <div class="settings-hint">
+        How often the radar fetches fresh aircraft positions from adsb.fi.
+        Longer = gentler on the network and less list-rebuild flicker;
+        shorter = tighter tracking of fast-moving aircraft.
+      </div>
+    </div>
+
+    <div class="settings-section">
       <div class="settings-section-head">Analyse panel</div>
       <label class="field">
         <span>Auto-refresh</span>
@@ -761,8 +780,7 @@
       </label>
       <div class="settings-hint">
         Auto-refresh fires both the Scene and the High-altitude calls every
-        interval — useful for an ambient view, but eats LLM quota fast. Off
-        is friendliest to free-tier keys.
+        interval — manual is friendliest to your LLM bill.
       </div>
     </div>
 
@@ -888,7 +906,9 @@ const DEFAULT_CITY = "ARN";
 const MIN_RADIUS_NM = 10;
 const MAX_RADIUS_NM = 250;   // adsb.fi v3 caps here
 let   RADIUS_NM     = 100;   // mutable — adjusted by zoom controls
-const POLL_MS = 5000;
+/** Aircraft poll interval in ms. Set from settings at boot, can be live-changed
+ *  via the settings modal. Floor 5000 to respect adsb.fi's 1 req/s upstream. */
+let   POLL_MS = 30000;
 
 const params = new URLSearchParams(location.search);
 const cityKey = (params.get("city") || "").toUpperCase();
@@ -933,7 +953,12 @@ const SETTINGS_DEFAULTS = {
   openaiModel: "",
   /** 0 = manual refresh only (default); otherwise seconds between
    *  auto-refreshes of the Analyse the sky panel. */
-  analyseRefreshSec: 0
+  analyseRefreshSec: 0,
+  /** Seconds between live-aircraft polls. Default 30 — gentler on the
+   *  network and avoids list-rebuild flicker. Drop to 5 for tighter
+   *  tracking, raise to 60 for ambient use. Minimum effective is 5
+   *  (upstream caches 1.5 s anyway). */
+  pollSec: 30
 };
 function loadSettings() {
   try {
@@ -1500,7 +1525,7 @@ async function runExplain(ac, card) {
       cardState.set(ac.hex, {
         ...(cardState.get(ac.hex) || {}),
         explainState: "error",
-        explainError: d.error || ("HTTP " + r.status) + (d.body ? "  ·  " + d.body : "")
+        explainError: friendlyLlmError(d, r.status)
       });
     } else {
       cardState.set(ac.hex, {
@@ -1552,6 +1577,24 @@ function paintExplain(hex) {
 /** Old name kept for the renderDetail call site — delegates to paintExplain. */
 function restoreExplain(hex) { paintExplain(hex); }
 
+/** Convert a raw LLM error response into something a non-technical user
+ *  can act on. 429 = rate limit; 503 = provider overloaded; everything
+ *  else just shows the error + upstream body. */
+function friendlyLlmError(d, status) {
+  const msg = (d && d.error) || ("HTTP " + status);
+  if (/429/.test(msg) || status === 429) {
+    return msg
+        + "\n\nRate-limit response. On a paid tier this is rare and usually "
+        + "transient — wait 10–30 s and retry. If it persists, check the "
+        + "API key's quota and tier on the provider console. Switching to "
+        + "OpenAI in ⚙ Settings is the quickest fallback.";
+  }
+  if (/503/.test(msg) || status === 503) {
+    return msg + "\n\nProvider is overloaded — try again in a few seconds.";
+  }
+  return msg + (d && d.body ? "\n\n" + d.body : "");
+}
+
 // ---------- settings modal wiring ----------
 function openSettings() {
   const s = loadSettings();
@@ -1565,6 +1608,7 @@ function openSettings() {
   $("#settings-openai-url").value   = s.openaiUrl   || "";
   $("#settings-openai-model").value = s.openaiModel || "";
   $("#settings-refresh").value      = String(s.analyseRefreshSec || 0);
+  $("#settings-poll").value         = String(s.pollSec || 30);
   $("#settings-msg").textContent    = "";
   $("#settings-backdrop").style.display = "";
   $("#settings-modal").style.display = "";
@@ -1582,13 +1626,16 @@ function commitSettings() {
     openaiKey:   $("#settings-openai-key").value.trim(),
     openaiUrl:   $("#settings-openai-url").value.trim(),
     openaiModel: $("#settings-openai-model").value.trim(),
-    analyseRefreshSec: parseInt($("#settings-refresh").value, 10) || 0
+    analyseRefreshSec: parseInt($("#settings-refresh").value, 10) || 0,
+    pollSec:           parseInt($("#settings-poll").value, 10)    || 30
   };
   saveSettings(s);
   // Re-apply refresh policy to a currently-open analyse panel.
   if (document.getElementById("analyse-panel").style.display !== "none") {
     applyAnalyseRefreshPolicy();
   }
+  // Re-apply the live poll interval immediately.
+  applyPollPolicy();
   const msg = $("#settings-msg");
   msg.style.color = "var(--green)";
   msg.textContent = "saved";
@@ -1694,7 +1741,7 @@ async function runAnalyseSection(mode, selector) {
     const d = await r.json();
     if (!r.ok) {
       out.className = "analyse-text error";
-      out.textContent = d.error || ("HTTP " + r.status);
+      out.textContent = friendlyLlmError(d, r.status);
       return;
     }
     out.className = "analyse-text";
@@ -1746,10 +1793,26 @@ window.addEventListener("resize", () => requestAnimationFrame(drawRadar));
 // Sync zoom controls with the initial RADIUS_NM.
 document.getElementById("zoom-readout").textContent = RADIUS_NM;
 document.getElementById("radius-label").textContent = RADIUS_NM + " nm";
+
+let pollTimer = null;
+function applyPollPolicy() {
+  const s = loadSettings();
+  POLL_MS = Math.max(5000, (parseInt(s.pollSec, 10) || 30) * 1000);
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(tick, POLL_MS);
+  // Update the "refresh every X" label in the bottom-right overlay.
+  const label = document.getElementById("poll-label");
+  if (label) {
+    label.textContent = POLL_MS >= 60000
+        ? (POLL_MS / 60000) + " min"
+        : (POLL_MS / 1000) + " s";
+  }
+}
+
 customCentreReady.then(() => {
   tick();
   tickIss();
-  setInterval(tick, POLL_MS);
+  applyPollPolicy();
   setInterval(tickIss, ISS_POLL_MS);
 });
 </script>

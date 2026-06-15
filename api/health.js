@@ -9,7 +9,10 @@
 // Vercel and redeploy.
 
 export default function handler(req, res) {
-  const checked = ["GEMINI_API_KEY", "GEMINI_MODEL"];
+  const checked = [
+    "GEMINI_API_KEY", "GEMINI_MODEL",
+    "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL"
+  ];
   const env = {};
   for (const name of checked) {
     const v = process.env[name];
