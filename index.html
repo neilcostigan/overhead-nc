@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Overhead — Arlanda  ·  online</title>
+<!-- Vercel Analytics — page views + custom events. Uses the vanilla
+     script tag; the @vercel/analytics/next import is Next.js-only and
+     wouldn't work on a static site like this. Auto no-ops off-Vercel
+     so it's safe in `vercel dev` and on `file://` previews. -->
+<script>
+  window.va = window.va || function () {
+    (window.vaq = window.vaq || []).push(arguments);
+  };
+</script>
+<script defer src="/_vercel/insights/script.js"></script>
 <style>
   :root {
     --bg: #05080d;
