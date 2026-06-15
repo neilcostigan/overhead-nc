@@ -991,6 +991,10 @@ let selectedHex = null;
 const drawnHits = [];
 /** Cached route coords per hex: { hex: { origin: {lat,lon,code}, dest: {...} } } */
 const routeCoords = new Map();
+/** Per-aircraft detail cache, keyed by hex. Used to repopulate the inline
+ *  detail card after every 5-second list rebuild — otherwise the data
+ *  flashes back to "loading…" on every tick. */
+const cardState = new Map(); // hex → { info, route, explain }
 radar.style.cursor = "crosshair";
 radar.addEventListener("click", (ev) => {
   const rect = radar.getBoundingClientRect();
@@ -1385,35 +1389,56 @@ function renderDetail() {
   row.insertAdjacentElement("afterend", card);
   loadAircraftInfo(ac.hex, card);
   if (cs) loadRoute(cs, card);
+  restoreExplain(ac.hex, card);
   card.querySelector("[data-explain]").addEventListener("click", () =>
       runExplain(ac, card));
 }
 
 async function loadAircraftInfo(hex, card) {
+  // Restore from cache instantly if we already have it.
+  const cached = (cardState.get(hex) || {}).info;
+  if (cached) {
+    applyInfo(card, cached);
+    return;
+  }
   try {
     const r = await fetch("/api/aircraft-info?hex=" + encodeURIComponent(hex));
     const d = await r.json();
-    card.querySelector("[data-reg]").textContent  = d.registration || "—";
-    card.querySelector("[data-type]").textContent = d.type || "—";
-    card.querySelector("[data-op]").textContent   = d.operator || "—";
+    const info = {
+      registration: d.registration || "—",
+      type:         d.type || "—",
+      operator:     d.operator || "—"
+    };
+    cardState.set(hex, { ...(cardState.get(hex) || {}), info });
+    applyInfo(card, info);
   } catch {
-    card.querySelector("[data-reg]").textContent  = "—";
-    card.querySelector("[data-type]").textContent = "—";
-    card.querySelector("[data-op]").textContent   = "—";
+    applyInfo(card, { registration: "—", type: "—", operator: "—" });
   }
+}
+function applyInfo(card, info) {
+  card.querySelector("[data-reg]").textContent  = info.registration;
+  card.querySelector("[data-type]").textContent = info.type;
+  card.querySelector("[data-op]").textContent   = info.operator;
 }
 
 async function loadRoute(callsign, card) {
+  const hex = selectedHex;
+  const cached = (cardState.get(hex) || {}).route;
+  if (cached) {
+    card.querySelector("[data-route]").textContent = cached;
+    return;
+  }
   try {
     const r = await fetch("/api/route?callsign=" + encodeURIComponent(callsign));
     const d = await r.json();
     const slot = card.querySelector("[data-route]");
     if (d.origin && d.destination) {
-      slot.textContent = `${d.origin} → ${d.destination}`
+      const txt = `${d.origin} → ${d.destination}`
           + (d.originName && d.destName ? `   (${d.originName} → ${d.destName})` : "");
+      slot.textContent = txt;
+      cardState.set(hex, { ...(cardState.get(hex) || {}), route: txt });
       // Resolve the two codes to lat/lon in parallel and cache for the
       // radar's route-line renderer. Then trigger a redraw.
-      const hex = selectedHex;
       Promise.all([
         fetch("/api/airport?code=" + encodeURIComponent(d.origin)).then(r => r.json()),
         fetch("/api/airport?code=" + encodeURIComponent(d.destination)).then(r => r.json())
@@ -1428,6 +1453,7 @@ async function loadRoute(callsign, card) {
       }).catch(() => {});
     } else {
       slot.textContent = "—";
+      cardState.set(hex, { ...(cardState.get(hex) || {}), route: "—" });
     }
   } catch {
     card.querySelector("[data-route]").textContent = "—";
@@ -1464,6 +1490,10 @@ async function runExplain(ac, card) {
       out.className = "explain-text";
       out.innerHTML = mdToHtml(d.text)
           + (d.model ? `<span class="model-tag">model: ${d.model}</span>` : "");
+      cardState.set(ac.hex, {
+        ...(cardState.get(ac.hex) || {}),
+        explain: { text: d.text, model: d.model }
+      });
     }
   } catch (e) {
     out.className = "explain-text error";
@@ -1471,6 +1501,18 @@ async function runExplain(ac, card) {
   } finally {
     btn.disabled = false;
   }
+}
+
+/** If we've previously asked Explain for this hex, restore the cached
+ *  HTML into the card so the 5-second list rebuild doesn't reset it. */
+function restoreExplain(hex, card) {
+  const cached = (cardState.get(hex) || {}).explain;
+  if (!cached) return;
+  const out = card.querySelector("[data-explain-out]");
+  out.style.display = "";
+  out.className = "explain-text";
+  out.innerHTML = mdToHtml(cached.text)
+      + (cached.model ? `<span class="model-tag">model: ${cached.model}</span>` : "");
 }
 
 // ---------- settings modal wiring ----------
