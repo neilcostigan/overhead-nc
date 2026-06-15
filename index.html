@@ -253,9 +253,22 @@
     color: var(--text-dim);
     font-size: 12px;
     line-height: 1.55;
-    white-space: pre-wrap;
     max-height: 60vh;
     overflow-y: auto;
+  }
+  .analyse-text p   { margin: 0 0 10px; }
+  .analyse-text ul  { margin: 0 0 10px; padding-left: 18px; }
+  .analyse-text li  { margin-bottom: 4px; }
+  .analyse-text b   { color: var(--text); }
+  .analyse-text .model-tag {
+    display: block;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+    color: var(--text-faint);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
   }
   .analyse-text.error { color: var(--red); }
   .analyse-text.loading { color: var(--text-faint); font-style: italic; }
@@ -377,13 +390,27 @@
   .detail .explain-btn:disabled { opacity: 0.5; cursor: default; }
   .detail .explain-text {
     margin-top: 10px;
-    padding: 10px;
+    padding: 10px 12px;
     background: var(--bg);
     border-left: 2px solid var(--amber);
     color: var(--text-dim);
     font-size: 11px;
-    white-space: pre-wrap;
+    line-height: 1.55;
     border-radius: 2px;
+  }
+  .detail .explain-text p  { margin: 0 0 8px; }
+  .detail .explain-text ul { margin: 0 0 8px; padding-left: 16px; }
+  .detail .explain-text li { margin-bottom: 3px; }
+  .detail .explain-text b  { color: var(--text); }
+  .detail .explain-text .model-tag {
+    display: block;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+    color: var(--text-faint);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
   }
   .detail .explain-text.loading { color: var(--text-faint); font-style: italic; }
   .detail .explain-text.error { border-left-color: var(--red); color: var(--red); }
@@ -530,6 +557,41 @@ const customCentreReady = customCode
     : Promise.resolve();
 
 const $ = sel => document.querySelector(sel);
+
+/** Render a tiny, safe subset of markdown — paragraphs, bullets (* or -),
+ *  bold (**…**) and italic (*…*) — into HTML. All HTML in the source is
+ *  escaped first so an LLM can't smuggle a `<script>` through. Used for
+ *  Explain and Analyse outputs. */
+function mdToHtml(src) {
+  if (!src) return "";
+  const esc = src
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  // Split into paragraph blocks on blank lines.
+  const blocks = esc.split(/\n\s*\n/);
+  let out = "";
+  for (const block of blocks) {
+    const lines = block.split(/\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) continue;
+    // List block: every line starts with * or - (with optional leading space).
+    if (lines.every(l => /^[*\-]\s+/.test(l))) {
+      const items = lines.map(l => inline(l.replace(/^[*\-]\s+/, "")));
+      out += "<ul>" + items.map(i => "<li>" + i + "</li>").join("") + "</ul>";
+    } else {
+      out += "<p>" + lines.map(inline).join(" ") + "</p>";
+    }
+  }
+  return out;
+
+  function inline(s) {
+    // Bold first (**…**), then italic (*…*) so the inner doesn't clobber.
+    return s
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<i>$2</i>");
+  }
+}
 const radar = $("#radar");
 const ctx = radar.getContext("2d");
 let aircraft = [];
@@ -975,7 +1037,8 @@ async function runExplain(ac, card) {
       out.textContent = d.error || ("HTTP " + r.status);
     } else {
       out.className = "explain-text";
-      out.textContent = d.text + (d.model ? ("\n\n— " + d.model) : "");
+      out.innerHTML = mdToHtml(d.text)
+          + (d.model ? `<span class="model-tag">model: ${d.model}</span>` : "");
     }
   } catch (e) {
     out.className = "explain-text error";
@@ -1024,7 +1087,12 @@ async function runAnalyse() {
       out.textContent = d.error || ("HTTP " + r.status);
     } else {
       out.className = "analyse-text";
-      out.textContent = d.text + (d.model ? ("\n\n— " + d.model) : "");
+      out.innerHTML = mdToHtml(d.text)
+          + (d.model
+              ? `<span class="model-tag">model: ${d.model}${
+                  d.enriched != null ? `  ·  ${d.enriched} routes resolved` : ""
+                }</span>`
+              : "");
     }
   } catch (e) {
     out.className = "analyse-text error";
