@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Overhead — Arlanda  ·  online</title>
+<title>Overhead — Carlow  ·  online</title>
 <!-- Vercel Analytics — page views + custom events. Uses the vanilla
      script tag; the @vercel/analytics/next import is Next.js-only and
      wouldn't work on a static site like this. Auto no-ops off-Vercel
@@ -768,7 +768,7 @@
 
 <div class="banner">
   <span class="badge">Online  ·  no DVB-T receiver</span>
-  <span class="title" id="banner-title">Overhead — Stockholm Arlanda</span>
+  <span class="title" id="banner-title">Overhead — Carlow</span>
   <span class="city-picker">
     <select id="city-select"></select>
     <input id="custom-code" type="text" placeholder="IATA / ICAO" maxlength="4"
@@ -906,8 +906,8 @@
     <canvas id="radar"></canvas>
 
     <div class="overlay tl">
-      <div id="airport-codes" style="color:var(--amber);font-size:18px;letter-spacing:0.05em;text-shadow:0 0 12px var(--amber-glow);">ARN  ·  ESSA</div>
-      <div id="airport-name" style="color:var(--text-faint);font-size:9px;letter-spacing:0.2em;margin-top:2px;">STOCKHOLM ARLANDA</div>
+      <div id="airport-codes" style="color:var(--amber);font-size:18px;letter-spacing:0.05em;text-shadow:0 0 12px var(--amber-glow);">CARLOW</div>
+      <div id="airport-name" style="color:var(--text-faint);font-size:9px;letter-spacing:0.2em;margin-top:2px;">CARLOW</div>
       <div class="conn"><span class="dot" id="dot"></span><span id="conn-text">Connecting…</span></div>
     </div>
 
@@ -916,7 +916,7 @@
       <div class="big-label">IN  RANGE</div>
       <div class="meta">
         <span>radius <b id="radius-label">100 nm</b></span>  ·
-        <span>centre <b id="centre-label">59.65, 17.92</b></span>  ·
+        <span>centre <b id="centre-label">52.84, -6.93</b></span>  ·
         <span>upd <b id="updated">—</b></span>
       </div>
     </div>
@@ -1007,7 +1007,7 @@ const CITIES = {
   CARLOW: { iata: "CARLOW", icao: "",     name: "Carlow",
             lat: 52.8407, lon: -6.9269 },
 };
-const DEFAULT_CITY = "ARN";
+const DEFAULT_CITY = "CARLOW";
 const MIN_RADIUS_NM = 10;
 const MAX_RADIUS_NM = 250;   // adsb.fi v3 caps here
 let   RADIUS_NM     = 100;   // mutable — adjusted by zoom controls
