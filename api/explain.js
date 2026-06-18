@@ -39,6 +39,7 @@ export default async function handler(req, res) {
   if (!/^[0-9a-f]{6}$/.test(hex)) {
     return res.status(400).json({ error: "hex must be 6 hex chars" });
   }
+  const units = (src.units === "aviation") ? "aviation" : "metric";
   const callsign = (src.callsign || "").toString().trim().toUpperCase();
   const lat = parseFloat(src.lat);
   const lon = parseFloat(src.lon);
@@ -66,12 +67,12 @@ export default async function handler(req, res) {
   ]);
 
   const prompt = buildPrompt({
-    hex, callsign, lat, lon, altFt, gsKt, trkDeg,
+    hex, callsign, lat, lon, altFt, gsKt, trkDeg, units,
     info:  acInfo.status === "fulfilled" ? acInfo.value : null,
     route: routeInfo.status === "fulfilled" ? routeInfo.value : null
   });
 
-  const result = await callLlm(prompt, llmSettings, { maxTokens: 3000 });
+  const result = await callLlm(prompt, llmSettings, { maxTokens: 1500 });
   if (result.error) {
     return res.status(502).json({
       error: result.error,
@@ -84,6 +85,12 @@ export default async function handler(req, res) {
   res.setHeader("X-Cache", "MISS");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.status(200).json({ text: result.text, model: result.model });
+}
+
+function unitsInstruction(units) {
+  return units === "aviation"
+    ? "Use aviation units in your reply: feet for altitude, knots for speed, nautical miles for distance."
+    : "Use metric units in your reply: metres for altitude, km/h for speed, kilometres for distance.";
 }
 
 function buildPrompt(p) {
@@ -110,51 +117,28 @@ function buildPrompt(p) {
   if (!isNaN(p.trkDeg)) facts.push(`Track: ${Math.round(p.trkDeg)}°`);
 
   return [
-    "You are an aviation assistant writing for a curious enthusiast watching",
-    "live ADS-B traffic. Below are the facts we have about ONE aircraft.",
+    "You are an aviation assistant. Below are the facts we have about ONE",
+    "aircraft. Write a concise but informative briefing — short enough to",
+    "read in 30 seconds, substantial enough to be worth reading.",
     "",
-    "Write a thorough, detailed briefing. Cover, in this order, with the",
-    "section labels exactly as shown:",
+    "Cover, in this order, with the section labels exactly as shown:",
     "",
-    "**Summary** — A two-to-three sentence plain-English opener: who is",
-    "  flying, what they're flying, where to.",
+    "**Summary** — Two sentences: who, what, where to.",
+    "**Operator** — Airline / operator and what kind of carrier it is.",
+    "**Aircraft** — Type, role, and one or two distinguishing facts.",
+    "**Route** — Origin → destination, corridor, distance.",
+    "**In flight** — What the current altitude / speed / track imply",
+    "  about the phase of flight.",
+    "**Notable** — Anything quirky or interesting; say 'nothing unusual'",
+    "  if there isn't.",
     "",
-    "**Operator** — The airline / operator: parent group, country of origin,",
-    "  hub bases, fleet character (low-cost / legacy / cargo / charter / ",
-    "  military / business / state). Mention anything notable about the",
-    "  airline's identity or traditions if relevant.",
+    "Use **bold** for key facts. Write each section as 1-3 sentences",
+    "of flowing prose — not bullets. Aim for ~250-300 words total.",
     "",
-    "**Aircraft** — The type and variant: typical role, range, MTOW class,",
-    "  seat count or freight payload, engines, age of the variant, fleet",
-    "  size in service worldwide if known. If the registration is given,",
-    "  note the country prefix and what it tells us.",
+    "STRICT: Don't invent. If a field is missing, say '(unknown)'.",
+    "Start directly with **Summary** — no preamble.",
     "",
-    "**Route** — Origin → destination. Both airports by full name + city +",
-    "  IATA + ICAO. The corridor (North Atlantic, intra-European shuttle,",
-    "  Trans-Pacific, etc.). Great-circle distance in nm and km.",
-    "  Approximate block time. Whether this is a destination flight for",
-    "  the user's view or a transit overflight.",
-    "",
-    "**In flight now** — What the altitude, speed, and track imply about",
-    "  phase of flight (climb / cruise / descent / approach). Mention",
-    "  typical cruise altitudes for this type and how today compares.",
-    "  Anything unusual about the current numbers.",
-    "",
-    "**Notable** — Anything quirky or interesting: rare type-route pair,",
-    "  notable callsign convention (e.g. 'SHAMU' for Southwest, 'SPEEDBIRD'",
-    "  for BA, 'CACTUS' for American legacy US Airways), the operator's",
-    "  recent fleet history, why a knowledgeable spotter might pause to",
-    "  look. If nothing notable comes to mind, say so plainly.",
-    "",
-    "Use bold for key facts (airline names, aircraft types, airport codes,",
-    "distances). Write in flowing prose within each section, not bullets",
-    "of single phrases. Aim for around 500–700 words total — long enough",
-    "to be substantive, short enough to read in a minute.",
-    "",
-    "STRICT: Do not invent facts. If a field is missing or unknown, say",
-    "'(unknown)' or 'we don't have that'. Corroborate the listed facts;",
-    "don't contradict them. No prompt repetition. No 'sure, here is…'",
-    "preamble. Start directly with the **Summary** heading.",
+    unitsInstruction(p.units),
     "",
     "Facts:",
     ...facts

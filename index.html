@@ -852,6 +852,13 @@
     <div class="settings-section">
       <div class="settings-section-head">Live data</div>
       <label class="field">
+        <span>Units</span>
+        <select id="settings-units">
+          <option value="metric">Metric  ·  m, km/h, km  (default)</option>
+          <option value="aviation">Aviation  ·  ft, kt, nm</option>
+        </select>
+      </label>
+      <label class="field">
         <span>Aircraft poll</span>
         <select id="settings-poll">
           <option value="5">Every 5 s  ·  tight tracking</option>
@@ -956,6 +963,11 @@
           <div class="analyse-section-head">High-altitude overflies  ·  FL250 and up</div>
           <div class="analyse-text" id="analyse-overflies">Asking the LLM…</div>
         </div>
+
+        <div class="analyse-section">
+          <div class="analyse-section-head">Unusual  ·  military, government, emergency, business, cargo</div>
+          <div class="analyse-text" id="analyse-unusual">Asking the LLM…</div>
+        </div>
       </div>
     </div>
   </div>
@@ -1004,6 +1016,8 @@ const CITIES = {
             lat: 51.4700, lon: -0.4543 },
   EXT:    { iata: "EXT",    icao: "EGTE", name: "Exeter",
             lat: 50.7344, lon: -3.4139 },
+  EMA:    { iata: "EMA",    icao: "EGNX", name: "East Midlands",
+            lat: 52.8311, lon: -1.3281 },
   SFO:    { iata: "SFO",    icao: "KSFO", name: "San Francisco",
             lat: 37.6213, lon: -122.3790 },
   CARLOW: { iata: "CARLOW", icao: "",     name: "Carlow",
@@ -1085,8 +1099,36 @@ const SETTINGS_DEFAULTS = {
    *  network and avoids list-rebuild flicker. Drop to 5 for tighter
    *  tracking, raise to 60 for ambient use. Minimum effective is 5
    *  (upstream caches 1.5 s anyway). */
-  pollSec: 30
+  pollSec: 30,
+  /** "metric" = m, km/h, km  (default)
+   *  "aviation" = ft, kt, nm  (matches ADS-B raw values & most pilot tools) */
+  units: "metric"
 };
+
+// ---- unit format helpers ----
+const KM_PER_NM = 1.852;
+const KMH_PER_KT = 1.852;
+const M_PER_FT = 0.3048;
+function activeUnits() { return (loadSettings().units || "metric"); }
+function fmtAlt(ft) {
+  if (typeof ft !== "number") return ft === "ground" ? "ground" : "—";
+  if (activeUnits() === "aviation") return ft.toLocaleString() + " ft";
+  return Math.round(ft * M_PER_FT).toLocaleString() + " m";
+}
+function fmtSpd(kt) {
+  if (typeof kt !== "number") return "—";
+  if (activeUnits() === "aviation") return Math.round(kt) + " kt";
+  return Math.round(kt * KMH_PER_KT) + " km/h";
+}
+function fmtDist(nm) {
+  if (typeof nm !== "number") return "—";
+  if (activeUnits() === "aviation") {
+    return nm < 10 ? nm.toFixed(1) + " nm" : Math.round(nm) + " nm";
+  }
+  const km = nm * KM_PER_NM;
+  return km < 10 ? km.toFixed(1) + " km" : Math.round(km) + " km";
+}
+function distUnitLabel() { return activeUnits() === "aviation" ? "nm" : "km"; }
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -1188,12 +1230,26 @@ function setRadius(nm) {
   const next = Math.max(MIN_RADIUS_NM, Math.min(MAX_RADIUS_NM, Math.round(nm)));
   if (next === RADIUS_NM) return;
   RADIUS_NM = next;
-  document.getElementById("zoom-readout").textContent = RADIUS_NM;
-  document.getElementById("radius-label").textContent = RADIUS_NM + " nm";
+  refreshRadiusReadout();
   document.getElementById("zoom-in").disabled  = (RADIUS_NM <= MIN_RADIUS_NM);
   document.getElementById("zoom-out").disabled = (RADIUS_NM >= MAX_RADIUS_NM);
   // Pull fresh data for the new dist; cached upstream so it's cheap.
   tick();
+}
+
+/** Push current radius into the readouts in the active unit. Called by
+ *  setRadius and by the settings-save when units change. */
+function refreshRadiusReadout() {
+  const aviation = activeUnits() === "aviation";
+  const valueText = aviation ? RADIUS_NM : Math.round(RADIUS_NM * KM_PER_NM);
+  const unitText  = aviation ? "nm" : "km";
+  const z = document.getElementById("zoom-readout");
+  if (z) z.textContent = valueText;
+  const r = document.getElementById("radius-label");
+  if (r) r.textContent = valueText + " " + unitText;
+  // The "nm" / "km" label under the zoom counter
+  const span = document.querySelector(".zoom-readout span");
+  if (span) span.textContent = unitText;
 }
 
 document.getElementById("zoom-in").addEventListener("click",
@@ -1317,6 +1373,8 @@ async function goCustom() {
   }
 }
 
+// (renderDetail is defined later; this is the math block.)
+
 // ---------- math ----------
 function haversineNm(lat1, lon1, lat2, lon2) {
   const R = 3440.065;       // Earth radius in nautical miles
@@ -1411,7 +1469,11 @@ function drawRadar() {
   ctx.fillStyle = "#6c7689";
   ctx.font = "12px " + getComputedStyle(document.body).fontFamily;
   ctx.fillText("N", cx - 4, cy - r - 6);
-  ctx.fillText(RADIUS_NM + " nm", cx + r - 36, cy - 6);
+  ctx.fillText(
+      activeUnits() === "aviation"
+        ? RADIUS_NM + " nm"
+        : Math.round(RADIUS_NM * KM_PER_NM) + " km",
+      cx + r - 50, cy - 6);
 
   // centre dot
   ctx.fillStyle = "#ffae1a";
@@ -1529,10 +1591,9 @@ function drawList() {
     const cs = (a.flight || a.hex || "").trim() || "—";
     const altRaw = a.alt_baro ?? a.altitude;
     const onGround = altRaw === "ground";
-    const alt = onGround ? "ground"
-              : (typeof altRaw === "number" ? altRaw.toLocaleString() + " ft" : "—");
-    const spd = typeof a.gs === "number" ? Math.round(a.gs) + " kt" : "";
-    const dist = a.distNm < 10 ? a.distNm.toFixed(1) : Math.round(a.distNm);
+    const alt = onGround ? "ground" : fmtAlt(altRaw);
+    const spd = fmtSpd(a.gs);
+    const dist = fmtDist(a.distNm);
     return `<div class="ac-row ${a.hex === selectedHex ? 'active' : ''}" data-hex="${a.hex}">
       <div>
         <div class="ac-callsign">${cs}</div>
@@ -1543,7 +1604,7 @@ function drawList() {
         <div class="ac-spd">${spd}</div>
       </div>
       <div>
-        <div class="ac-dist">${dist} nm</div>
+        <div class="ac-dist">${dist}</div>
         <div class="ac-brg">${compass(a.bearing)}  ${Math.round(a.bearing)}°</div>
       </div>
     </div>`;
@@ -1633,17 +1694,19 @@ function saveExplain(ac, format) {
   }
 }
 
-/** Save the current Analyse panel (Scene + Overflies) in one of three formats. */
+/** Save the current Analyse panel (Scene + Overflies + Unusual) in one of three formats. */
 function saveAnalyse(format) {
-  const scene = analyseState.scene;
+  const scene     = analyseState.scene;
   const overflies = analyseState.overflies;
-  if (!scene && !overflies) {
+  const unusual   = analyseState.unusual;
+  if (!scene && !overflies && !unusual) {
     alert("Run the Analyse panel at least once before saving.");
     return;
   }
   const sections = [];
   if (scene)     sections.push({ heading: "Scene — what's flying right now",  text: scene.text });
   if (overflies) sections.push({ heading: "High-altitude overflies — FL250 and up", text: overflies.text });
+  if (unusual)   sections.push({ heading: "Unusual — military, government, emergency, business, cargo", text: unusual.text });
 
   const meta = [
     ["Centre",     CENTRE.name],
@@ -1844,6 +1907,7 @@ async function runExplain(ac, card) {
       altFt: ac.alt_baro,
       gsKt: ac.gs,
       trkDeg: ac.track,
+      units: activeUnits(),
       llm: llmPayload()
     };
     const r = await fetch("/api/explain", {
@@ -1940,6 +2004,7 @@ function openSettings() {
   $("#settings-openai-model").value = s.openaiModel || "";
   $("#settings-refresh").value      = String(s.analyseRefreshSec || 0);
   $("#settings-poll").value         = String(s.pollSec || 30);
+  $("#settings-units").value        = s.units || "metric";
   $("#settings-msg").textContent    = "";
   $("#settings-backdrop").style.display = "";
   $("#settings-modal").style.display = "";
@@ -1958,7 +2023,8 @@ function commitSettings() {
     openaiUrl:   $("#settings-openai-url").value.trim(),
     openaiModel: $("#settings-openai-model").value.trim(),
     analyseRefreshSec: parseInt($("#settings-refresh").value, 10) || 0,
-    pollSec:           parseInt($("#settings-poll").value, 10)    || 30
+    pollSec:           parseInt($("#settings-poll").value, 10)    || 30,
+    units:             $("#settings-units").value === "aviation" ? "aviation" : "metric"
   };
   saveSettings(s);
   // Re-apply refresh policy to a currently-open analyse panel.
@@ -1967,6 +2033,10 @@ function commitSettings() {
   }
   // Re-apply the live poll interval immediately.
   applyPollPolicy();
+  // Update zoom + range readouts to the new unit; redraw the radar so
+  // the in-canvas range label matches.
+  refreshRadiusReadout();
+  drawRadar();
   const msg = $("#settings-msg");
   msg.style.color = "var(--green)";
   msg.textContent = "saved";
@@ -2026,7 +2096,7 @@ function applyAnalyseRefreshPolicy() {
   }
 }
 
-/** Fire both /api/analyse calls in parallel — scene + overflies. */
+/** Fire all three /api/analyse calls in parallel — scene + overflies + unusual. */
 function runAnalysePair() {
   const btn = document.getElementById("analyse-btn");
   const refresh = document.getElementById("analyse-refresh");
@@ -2034,7 +2104,8 @@ function runAnalysePair() {
   refresh.classList.add("busy");
   Promise.all([
     runAnalyseSection("scene",     "#analyse-scene"),
-    runAnalyseSection("overflies", "#analyse-overflies")
+    runAnalyseSection("overflies", "#analyse-overflies"),
+    runAnalyseSection("unusual",   "#analyse-unusual")
   ]).finally(() => {
     btn.disabled = false;
     refresh.classList.remove("busy");
@@ -2049,14 +2120,16 @@ async function runAnalyseSection(mode, selector) {
   if (out.textContent.startsWith("Asking the LLM")
       || out.className.includes("error")) {
     out.className = "analyse-text loading";
-    out.textContent = mode === "overflies"
-        ? "Looking at high-altitude transit traffic…"
-        : "Asking the LLM about what's flying right now…";
+    out.textContent =
+        mode === "overflies" ? "Looking at high-altitude transit traffic…" :
+        mode === "unusual"   ? "Scanning for military, government, emergency & unusual traffic…" :
+                               "Asking the LLM about what's flying right now…";
   }
   try {
     const payload = {
       city: CENTRE.name,
       mode,
+      units: activeUnits(),
       llm: llmPayload(),
       aircraft: aircraft.map(a => ({
         hex: a.hex,
@@ -2127,9 +2200,8 @@ async function tickIss() {
 
 // ---------- boot ----------
 window.addEventListener("resize", () => requestAnimationFrame(drawRadar));
-// Sync zoom controls with the initial RADIUS_NM.
-document.getElementById("zoom-readout").textContent = RADIUS_NM;
-document.getElementById("radius-label").textContent = RADIUS_NM + " nm";
+// Sync zoom controls with the initial RADIUS_NM in the active unit.
+refreshRadiusReadout();
 
 let pollTimer = null;
 function applyPollPolicy() {

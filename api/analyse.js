@@ -61,7 +61,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST only" });
   }
-  const { city = "", aircraft = [], mode = "scene", llm: llmSettings = {} } = req.body || {};
+  const { city = "", aircraft = [], mode = "scene", units = "metric", llm: llmSettings = {} } = req.body || {};
   const haveKey = !!(llmSettings.apiKey
                   || process.env.GEMINI_API_KEY
                   || process.env.OPENAI_API_KEY);
@@ -77,14 +77,18 @@ export default async function handler(req, res) {
   // Mode-specific aircraft selection.
   //   scene     — closest 25 (mix of arrivals, departures, transits)
   //   overflies — high & far: alt ≥ 25 000 ft AND dist ≥ 30 nm, top 25 by alt
+  //   unusual   — full list; LLM identifies non-commercial / military /
+  //               diplomatic / emergency from callsigns + types
   let candidates;
   if (mode === "overflies") {
     candidates = aircraft
       .filter(a => typeof a.alt_baro === "number" && a.alt_baro >= 25000)
       .filter(a => typeof a.distNm === "number" && a.distNm >= 30)
       .sort((a, b) => (b.alt_baro || 0) - (a.alt_baro || 0));
+  } else if (mode === "unusual") {
+    candidates = aircraft.slice();   // send everything; LLM filters
   } else {
-    candidates = aircraft.slice(); // already sorted by distance in the client
+    candidates = aircraft.slice();   // scene — already sorted by distance client-side
   }
   if (candidates.length === 0) {
     return res.status(200).json({
@@ -106,10 +110,10 @@ export default async function handler(req, res) {
     return res.status(200).json({ text: hit.text, model: hit.model });
   }
 
-  // Enrich the top 25 with route + airline in parallel. Each lookup hits
-  // adsbdb.com (free, no auth). 25 is a balance: covers the user's
-  // interesting set without making adsbdb angry.
-  const top = candidates.slice(0, 25);
+  // Enrich the top N with route + airline in parallel. Each lookup hits
+  // adsbdb.com (free, no auth). For "unusual" we widen the net to 40 so
+  // the LLM has the most callsign/operator context possible.
+  const top = candidates.slice(0, mode === "unusual" ? 40 : 25);
   const routes = await Promise.allSettled(top.map(a => fetchRoute(a.flight)));
   let enrichedCount = 0;
 
@@ -137,8 +141,10 @@ export default async function handler(req, res) {
   }).join("\n");
 
   const prompt = mode === "overflies"
-      ? overfliesPrompt({ city, all: aircraft, top, lines })
-      : scenePrompt   ({ city, all: aircraft, top, lines });
+      ? overfliesPrompt({ city, all: aircraft, top, lines, units })
+      : mode === "unusual"
+      ? unusualPrompt  ({ city, all: aircraft, top, lines, units })
+      : scenePrompt    ({ city, all: aircraft, top, lines, units });
 
   const result = await callLlm(prompt, llmSettings, { maxTokens: 2000 });
   if (result.error) {
@@ -159,7 +165,13 @@ export default async function handler(req, res) {
   });
 }
 
-function scenePrompt({ city, all, top, lines }) {
+function unitsLine(units) {
+  return units === "aviation"
+    ? "Use aviation units (ft / kt / nm) in your reply."
+    : "Use metric units (m / km/h / km) in your reply.";
+}
+
+function scenePrompt({ city, all, top, lines, units }) {
   return `You are an aviation assistant. The user is watching live ADS-B traffic
 around ${city || "an airport"}. ${all.length} aircraft are currently
 in range. The closest ${top.length} are listed below, with airline and
@@ -189,11 +201,13 @@ key facts. Aim for ~350 words; go longer if there's substance.
 Stay factual; if you can't identify something, say so plainly rather
 than guess. Don't pad. Don't repeat the prompt.
 
+${unitsLine(units)}
+
 Aircraft (top ${top.length} of ${all.length}):
 ${lines}`;
 }
 
-function overfliesPrompt({ city, all, top, lines }) {
+function overfliesPrompt({ city, all, top, lines, units }) {
   return `You are an aviation assistant. The user is watching live ADS-B traffic
 around ${city || "an airport"}. Below are the ${top.length} highest aircraft
 currently in range (all at or above FL250, at least 30 nm out — so almost
@@ -226,6 +240,58 @@ Bold the key facts. Aim for ~300 words; longer if there's substance.
 Stay factual; if you can't identify a route or operator, say so plainly
 rather than guess.
 
+${unitsLine(units)}
+
 High-altitude aircraft (top ${top.length} of ${all.length} in range):
+${lines}`;
+}
+
+function unusualPrompt({ city, all, top, lines, units }) {
+  return `You are an aviation assistant. The user is watching live ADS-B traffic
+around ${city || "an airport"}. The full visible list is below
+(${top.length} aircraft of ${all.length} in range, enriched with airline
+and route where adsbdb.com had them).
+
+Your job is to scan this list and surface every aircraft that is NOT
+routine commercial passenger traffic. Specifically look for, and call
+out, any of:
+
+  • **Military** — air force, navy, coastguard. Indicators include
+    callsigns prefixed RCH, MMF, RRR, GAF, ASCOT, NATO, etc.; missing
+    airline; types like C-17, C-130, A330 MRTT, P-8, KC-46, Typhoon,
+    F-35, E-3 / E-7 AEW, R/C-135 Rivet Joint.
+  • **Government / diplomatic / head of state** — callsigns like
+    AF1/Air Force One, EXEC1F, SAM, GAF (German government), SUI001
+    (Swiss Air Force VIP), etc. Boeing 737/757/747 or A319/A330 in
+    government colours, executive 737-700/-800/BBJ.
+  • **Emergency / medical** — squawk patterns (7700, 7600, 7500) when
+    visible; LIFEGUARD callsigns; air ambulance operators (Babcock,
+    Bond, ORNGE). Helicopters at low altitude near hospitals.
+  • **Business jets** — Gulfstream G550/G650, Bombardier Global,
+    Dassault Falcon, Cessna Citation, Embraer Praetor / Phenom, when
+    operating outside scheduled airline patterns.
+  • **Cargo / freighter** — DHL, FedEx, UPS, ASL, Cargolux, Atlas Air,
+    777F/747-8F/767F.
+  • **Survey / calibration / patrol** — flight inspection, mapping,
+    police, border patrol, oil-spill, search-and-rescue.
+  • **Anything unusual** — rare type, unexpected operator for the
+    region, very low altitude transit, unusual squawk.
+
+Format:
+
+Open with a one-paragraph summary of what (if anything) stands out.
+Then bullet each individual flight you've flagged: callsign / hex,
+likely category, what it is, what makes it interesting, where it's
+going if known. One or two sentences per bullet.
+
+If everything visible looks like routine scheduled commercial traffic,
+say so plainly in two sentences and stop.
+
+Bold the key facts. Aim for ~300 words. Do not invent a category for
+a flight that doesn't fit — leave routine traffic out.
+
+${unitsLine(units)}
+
+Aircraft (top ${top.length} of ${all.length} in range):
 ${lines}`;
 }
