@@ -113,7 +113,7 @@
     border-radius: 3px;
   }
   .city-picker select { min-width: 180px; }
-  .city-picker input  { width: 90px; text-transform: uppercase; }
+  .city-picker input  { width: 230px; }
   .city-picker input:focus,
   .city-picker select:focus {
     outline: none;
@@ -771,8 +771,8 @@
   <span class="title" id="banner-title">Overhead — Carlow</span>
   <span class="city-picker">
     <select id="city-select"></select>
-    <input id="custom-code" type="text" placeholder="IATA / ICAO" maxlength="4"
-           autocomplete="off" autocapitalize="characters" spellcheck="false">
+    <input id="custom-code" type="text" placeholder="code, place, or 52.84,-6.93"
+           autocomplete="off" spellcheck="false" maxlength="80">
     <button id="custom-go" type="button">Go</button>
     <span class="custom-msg" id="custom-msg"></span>
   </span>
@@ -1004,6 +1004,8 @@ const CITIES = {
             lat: 51.4700, lon: -0.4543 },
   EXT:    { iata: "EXT",    icao: "EGTE", name: "Exeter",
             lat: 50.7344, lon: -3.4139 },
+  SFO:    { iata: "SFO",    icao: "KSFO", name: "San Francisco",
+            lat: 37.6213, lon: -122.3790 },
   CARLOW: { iata: "CARLOW", icao: "",     name: "Carlow",
             lat: 52.8407, lon: -6.9269 },
 };
@@ -1018,8 +1020,28 @@ let   POLL_MS = 30000;
 const params = new URLSearchParams(location.search);
 const cityKey = (params.get("city") || "").toUpperCase();
 const customCode = (params.get("code") || "").toUpperCase();
-// Default centre — overridden below when ?code=XYZ resolves on the server.
+const customLL   = (params.get("ll") || "").trim();
+const customName = (params.get("name") || "").trim();
+// Default centre — overridden below when ?code=XYZ resolves on the server,
+// or immediately when ?ll=lat,lon is present.
 let CENTRE = CITIES[cityKey] || CITIES[DEFAULT_CITY];
+
+// ?ll=lat,lon&name=NAME — explicit coords from the geocoder. Resolved
+// synchronously so we don't need a network round-trip on every page load.
+if (customLL) {
+  const m = customLL.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (m) {
+    const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+    if (lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      CENTRE = {
+        iata: customName || `${lat.toFixed(2)},${lon.toFixed(2)}`,
+        icao: "",
+        name: customName || `${lat.toFixed(3)}, ${lon.toFixed(3)}`,
+        lat, lon
+      };
+    }
+  }
+}
 // If the URL has ?code=XYZ, fetch the airport once before the first tick.
 const customCentreReady = customCode
     ? fetch("/api/airport?code=" + encodeURIComponent(customCode))
@@ -1233,25 +1255,62 @@ function zoomStep(curr, dir) {
 })();
 
 async function goCustom() {
-  const code = ($("#custom-code").value || "").trim().toUpperCase();
+  const raw = ($("#custom-code").value || "").trim();
   const msg = $("#custom-msg");
   msg.textContent = "";
-  if (!/^[A-Z0-9]{3,4}$/.test(code)) {
-    msg.textContent = "use 3 or 4 letter code";
+  if (!raw) {
+    msg.style.color = "var(--red)";
+    msg.textContent = "enter a code, place, or lat,lon";
     return;
   }
-  msg.style.color = "var(--text-faint)";
-  msg.textContent = "looking up " + code + "…";
-  try {
-    const r = await fetch("/api/airport?code=" + encodeURIComponent(code));
-    const d = await r.json();
-    if (d.missing || d.error) {
-      msg.style.color = "var(--red)";
-      msg.textContent = "code not found in table";
+
+  // 1) lat,lon  — fastest path, no network call
+  const coordMatch = raw.match(
+      /^\s*(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
+  if (coordMatch) {
+    const lat = parseFloat(coordMatch[1]);
+    const lon = parseFloat(coordMatch[2]);
+    if (lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+      const label = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+      location.search = `?ll=${encodeURIComponent(label)}&name=${encodeURIComponent(label)}`;
       return;
     }
-    // Use the URL's "code" query param so the picker remembers it on reload.
-    location.search = "?code=" + encodeURIComponent(code);
+  }
+
+  // 2) IATA / ICAO  — 3 or 4 letters, all alphanumeric
+  if (/^[A-Za-z0-9]{3,4}$/.test(raw)) {
+    msg.style.color = "var(--text-faint)";
+    msg.textContent = "looking up " + raw.toUpperCase() + "…";
+    try {
+      const r = await fetch("/api/airport?code=" + encodeURIComponent(raw));
+      const d = await r.json();
+      if (!d.missing && !d.error && d.lat != null) {
+        location.search = "?code=" + encodeURIComponent(raw.toUpperCase());
+        return;
+      }
+    } catch { /* fall through to geocode */ }
+  }
+
+  // 3) Free-text geocode via Nominatim
+  msg.style.color = "var(--text-faint)";
+  msg.textContent = "geocoding \"" + raw + "\"…";
+  try {
+    const r = await fetch("/api/geocode?q=" + encodeURIComponent(raw));
+    const d = await r.json();
+    if (d.missing) {
+      msg.style.color = "var(--red)";
+      msg.textContent = "place not found";
+      return;
+    }
+    if (d.error) {
+      msg.style.color = "var(--red)";
+      msg.textContent = d.error;
+      return;
+    }
+    // Store as ?ll=lat,lon&name=...  so the URL is shareable without re-geocoding.
+    const ll = `${d.lat.toFixed(4)},${d.lon.toFixed(4)}`;
+    location.search =
+        `?ll=${encodeURIComponent(ll)}&name=${encodeURIComponent(d.name || raw)}`;
   } catch (e) {
     msg.style.color = "var(--red)";
     msg.textContent = String(e);
