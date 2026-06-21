@@ -538,6 +538,26 @@
   .v3d-plane-label { color: var(--text-dim); font-size: 10px; }
   .v3d-plane-label.sel { color: var(--amber); font-weight: 700; }
   .v3d-route-label { color: var(--amber); font-size: 11px; font-weight: 700; }
+
+  #view-3d .v3d-selbadge {
+    position: absolute;
+    top: 60px; right: 18px;
+    z-index: 60;
+    background: rgba(5,8,13,0.78);
+    border: 1px solid var(--amber);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.5;
+    max-width: 260px;
+  }
+  body.theme-light #view-3d .v3d-selbadge { background: rgba(255,255,255,0.94); }
+  #view-3d .v3d-selbadge b { color: var(--amber); }
+  #view-3d .v3d-selbadge .row { display: block; color: var(--text-dim); font-size: 10px; }
+  #view-3d .v3d-selbadge .row.trail { color: var(--amber); font-weight: 700; }
+  #view-3d .v3d-selbadge .hint { display: block; color: var(--text-faint); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 6px; }
   .overlay.bl { bottom: 16px; left: 16px; }
   .overlay.br { bottom: 16px; right: 16px; font-size: 11px; color: var(--text-dim); }
 
@@ -2523,6 +2543,17 @@ window.__overhead = {
     if (!Array.isArray(points) || points.length === 0) return;
     // points: [{lat, lon, alt, t}, ...] sorted oldest → newest
     trackHistory.set(hex, points.slice(-TRACK_MAX));
+  },
+  /** Select an aircraft from outside the regular click handlers
+   *  (e.g. the 3D view). Mirrors a list-row click — repaints the
+   *  list/detail and lets the inline detail load. */
+  setSelected(hex) {
+    if (selectedHex && selectedHex !== hex) {
+      routeCoords.delete(selectedHex);
+    }
+    selectedHex = hex;
+    render();
+    renderDetail();
   }
 };
 // Wrap tick once to dispatch an event after each successful update.
@@ -2540,6 +2571,9 @@ window.__overhead = {
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { Line2 }         from "three/addons/lines/Line2.js";
+import { LineGeometry }  from "three/addons/lines/LineGeometry.js";
+import { LineMaterial }  from "three/addons/lines/LineMaterial.js";
 
 const host    = document.getElementById("view-3d");
 const trigger = document.getElementById("view-3d-btn");
@@ -2551,6 +2585,11 @@ let info, closeBtn, animHandle;
 let mounted = false;
 // Route arc objects for the currently-selected aircraft.
 let routeGroup = new THREE.Group();
+// Single fat-line trail used only for the currently-selected aircraft.
+// Lives in its own group so it's easy to wipe + rebuild on selection
+// change. Plain THREE.Line trails for the rest stay 1px (WebGL limit).
+let selTrailGroup = new THREE.Group();
+let selTrailMat = null;     // LineMaterial — needs resolution updates on resize
 const KM_PER_NM_3D = 1.852;
 const M_PER_FT_3D  = 0.3048;
 
@@ -2699,6 +2738,12 @@ function initScene() {
 
   scene.add(planeGroup);
   scene.add(routeGroup);
+  scene.add(selTrailGroup);
+  selTrailMat = new LineMaterial({
+    color: 0xffae1a, linewidth: 5, transparent: true, opacity: 0.95,
+    dashed: false
+  });
+  selTrailMat.resolution.set(w, h);
 
   // Chrome.
   closeBtn = document.createElement("button");
@@ -2711,12 +2756,88 @@ function initScene() {
   info.className = "v3d-info";
   info.innerHTML =
       `<b>3D view</b>  ·  same live data as the radar`
-    + `<span class="hint">Drag to orbit  ·  scroll to zoom  ·  right-drag to pan</span>`;
+    + `<span class="hint">Drag to orbit  ·  scroll to zoom  ·  right-drag to pan  ·  click a plane to select</span>`;
   host.appendChild(info);
+
+  // Selection badge (top-right under the close button).
+  selBadge = document.createElement("div");
+  selBadge.className = "v3d-selbadge";
+  selBadge.style.display = "none";
+  host.appendChild(selBadge);
+
+  // ----- click / tap selection -----
+  renderer.domElement.style.cursor = "default";
+  renderer.domElement.addEventListener("pointerdown", onPointerDown);
+  renderer.domElement.addEventListener("pointermove", onPointerHover);
 
   window.addEventListener("resize", on3dResize);
   mounted = true;
   animate();
+}
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let selBadge = null;
+// Small slop so a wobbly click still picks the cone.
+raycaster.params.Line.threshold = 6;
+raycaster.params.Points.threshold = 8;
+
+function pointerNormalised(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ( (ev.clientX - rect.left) / rect.width ) * 2 - 1;
+  pointer.y = -( (ev.clientY - rect.top)  / rect.height ) * 2 + 1;
+}
+
+function aircraftHitAtPointer() {
+  raycaster.setFromCamera(pointer, camera);
+  // Only consider the cones (planeGroup children that are Mesh + have hex).
+  const candidates = [];
+  for (const child of planeGroup.children) {
+    if (child.isMesh && child.userData && child.userData.hex) {
+      candidates.push(child);
+    }
+  }
+  const hits = raycaster.intersectObjects(candidates, false);
+  return hits.length ? hits[0].object : null;
+}
+
+function onPointerHover(ev) {
+  pointerNormalised(ev);
+  renderer.domElement.style.cursor = aircraftHitAtPointer() ? "pointer" : "default";
+}
+
+function onPointerDown(ev) {
+  if (ev.button !== 0) return;     // left click only
+  pointerNormalised(ev);
+  const hit = aircraftHitAtPointer();
+  if (!hit) return;
+  const hex = hit.userData.hex;
+  if (!hex) return;
+  // Mutate the shared selection — main script repaints list + detail,
+  // we repaint colours and badge.
+  window.__overhead.setSelected(hex);
+  paintSelBadge();
+  syncFromLiveAircraft();
+}
+
+function paintSelBadge() {
+  if (!selBadge) return;
+  const hex = window.__overhead && window.__overhead.selectedHex;
+  if (!hex) { selBadge.style.display = "none"; return; }
+  const ac = (window.__overhead.aircraft || []).find(a => a.hex === hex);
+  if (!ac) { selBadge.style.display = "none"; return; }
+  const cs = (ac.flight || "").trim() || hex.toUpperCase();
+  const altRaw = ac.alt_baro;
+  const alt = altRaw === "ground" ? "ground"
+            : (typeof altRaw === "number" ? altRaw.toLocaleString() + " ft" : "—");
+  const spd = typeof ac.gs === "number" ? Math.round(ac.gs) + " kt" : "—";
+  const trailLen = (window.__overhead.trackOf(hex) || []).length;
+  selBadge.innerHTML =
+      `<b>${cs}</b>  ·  ${hex.toUpperCase()}`
+    + `<span class="row">alt ${alt}  ·  spd ${spd}  ·  trk ${Math.round(ac.track || 0)}°</span>`
+    + `<span class="row trail">trail: ${trailLen} point${trailLen === 1 ? "" : "s"}</span>`
+    + `<span class="hint">Close 3D to see full details / Explain ✦</span>`;
+  selBadge.style.display = "";
 }
 
 function closeView() {
@@ -2731,6 +2852,7 @@ function on3dResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   if (labelRenderer) labelRenderer.setSize(w, h);
+  if (selTrailMat) selTrailMat.resolution.set(w, h);
 }
 
 function animate() {
@@ -2795,6 +2917,9 @@ function syncFromLiveAircraft() {
         new THREE.MeshLambertMaterial({ color: themePlane() })
       );
       cone.castShadow = false;
+      // Tag with hex so the raycaster can identify which aircraft was
+      // hit on a click.
+      cone.userData.hex = a.hex;
       // Drop line from ground up to cone.
       const lineGeo = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)
@@ -2919,6 +3044,40 @@ function syncFromLiveAircraft() {
 
   // Route arc for the selected aircraft, if we've resolved origin + dest.
   redrawRouteArc();
+  // Fat-line trail for the selected aircraft (real pixel width via Line2).
+  redrawSelectedTrail();
+  // Refresh corner badge to mirror current selection.
+  paintSelBadge();
+}
+
+/** Rebuild the highlighted Line2 trail for the currently-selected
+ *  aircraft so it stands out from the 1px THREE.Line trails of the
+ *  others. Tears down whatever was there last frame. */
+function redrawSelectedTrail() {
+  while (selTrailGroup.children.length > 0) {
+    const c = selTrailGroup.children[0];
+    selTrailGroup.remove(c);
+    if (c.geometry) c.geometry.dispose();
+  }
+  const hex = window.__overhead && window.__overhead.selectedHex;
+  if (!hex) return;
+  const history = (window.__overhead.trackOf(hex) || []);
+  if (history.length < 2) return;
+
+  const flat = [];
+  let lastAlt = 8;
+  for (const p of history) {
+    const xy = projectAircraftXY(p.lat, p.lon);
+    let altPx = scaleAlt(p.alt);
+    if (!(altPx > 0)) altPx = lastAlt;
+    else              lastAlt = altPx;
+    flat.push(xy.x, Math.max(altPx, 4), xy.z);
+  }
+  const geo = new LineGeometry();
+  geo.setPositions(flat);
+  const line = new Line2(geo, selTrailMat);
+  line.computeLineDistances();
+  selTrailGroup.add(line);
 }
 
 /** Clear and redraw the route arc + airport labels for whichever aircraft
