@@ -1324,6 +1324,11 @@ let selectedHex = null;
 const drawnHits = [];
 /** Cached route coords per hex: { hex: { origin: {lat,lon,code}, dest: {...} } } */
 const routeCoords = new Map();
+/** Per-aircraft accumulated track — appended on every tick we see them.
+ *  Used by the 3D view to draw flight trails; could also be wired into
+ *  the 2D radar later. Capped to TRACK_MAX points per aircraft. */
+const trackHistory = new Map();   // hex → [{lat, lon, alt, t}]
+const TRACK_MAX = 60;
 /** Per-aircraft detail cache, keyed by hex. Used to repopulate the inline
  *  detail card after every 5-second list rebuild — otherwise the data
  *  flashes back to "loading…" on every tick. */
@@ -1573,6 +1578,31 @@ async function tick() {
         ? `  ·  ${droppedOutside} outside, ${droppedStale} stale dropped`
         : "";
     setConn("ok", "Connected  ·  " + aircraft.length + " aircraft" + filteredNote);
+
+    // Append current position to each aircraft's accumulated track —
+    // skip if the last sample is at the same place (saves polyline
+    // points on stationary aircraft).
+    const now = Date.now();
+    const seenHexes = new Set();
+    for (const a of aircraft) {
+      seenHexes.add(a.hex);
+      const trail = trackHistory.get(a.hex) || [];
+      const last = trail[trail.length - 1];
+      const alt = typeof a.alt_baro === "number" ? a.alt_baro : 0;
+      if (!last || last.lat !== a.lat || last.lon !== a.lon) {
+        trail.push({ lat: a.lat, lon: a.lon, alt, t: now });
+        while (trail.length > TRACK_MAX) trail.shift();
+        trackHistory.set(a.hex, trail);
+      }
+    }
+    // Drop tracks for aircraft we haven't seen in 5 min — keeps the
+    // Map from growing forever.
+    for (const [hex, trail] of trackHistory) {
+      if (!seenHexes.has(hex)
+          && (!trail.length || now - trail[trail.length - 1].t > 5 * 60 * 1000)) {
+        trackHistory.delete(hex);
+      }
+    }
     $("#updated").textContent = new Date().toLocaleTimeString();
     render();
   } catch (e) {
@@ -2469,7 +2499,8 @@ window.__overhead = {
   get aircraft()    { return aircraft; },
   get CENTRE()      { return CENTRE; },
   get RADIUS_NM()   { return RADIUS_NM; },
-  get selectedHex() { return selectedHex; }
+  get selectedHex() { return selectedHex; },
+  trackOf(hex)      { return trackHistory.get(hex) || []; }
 };
 // Wrap tick once to dispatch an event after each successful update.
 (function wrapTickForBridge() {
@@ -2659,9 +2690,16 @@ function syncFromLiveAircraft() {
       ]);
       const line = new THREE.Line(lineGeo,
         new THREE.LineBasicMaterial({ color: themeLineColor(), transparent: true, opacity: 0.5 }));
+      // Flight trail — vertex-coloured so old points fade out.
+      const trailGeo = new THREE.BufferGeometry();
+      const trailMat = new THREE.LineBasicMaterial({
+        vertexColors: true, transparent: true
+      });
+      const trail = new THREE.Line(trailGeo, trailMat);
       planeGroup.add(cone);
       planeGroup.add(line);
-      m = { cone, line };
+      planeGroup.add(trail);
+      m = { cone, line, trail };
       meshes.set(a.hex, m);
     }
     m.cone.position.set(xy.x, altUnits, xy.z);
@@ -2676,18 +2714,51 @@ function syncFromLiveAircraft() {
     m.line.geometry.setFromPoints(pts);
     // Colour: selected = amber.
     const sel = a.hex === (window.__overhead && window.__overhead.selectedHex);
-    m.cone.material.color = sel ? themeAmber() : themePlane();
+    const accent = sel ? themeAmber() : themePlane();
+    m.cone.material.color = accent;
     m.cone.material.needsUpdate = true;
+
+    // ----- flight trail -----
+    const history = (window.__overhead && window.__overhead.trackOf(a.hex)) || [];
+    if (history.length >= 2) {
+      const positions = new Float32Array(history.length * 3);
+      const colors    = new Float32Array(history.length * 3);
+      for (let i = 0; i < history.length; i++) {
+        const p = history[i];
+        const px = projectAircraftXY(p.lat, p.lon);
+        positions[i * 3 + 0] = px.x;
+        positions[i * 3 + 1] = scaleAlt(p.alt);
+        positions[i * 3 + 2] = px.z;
+        // Older = dim, newer = full colour.
+        const t = i / (history.length - 1);
+        colors[i * 3 + 0] = accent.r * t;
+        colors[i * 3 + 1] = accent.g * t;
+        colors[i * 3 + 2] = accent.b * t;
+      }
+      m.trail.geometry.setAttribute("position",
+          new THREE.BufferAttribute(positions, 3));
+      m.trail.geometry.setAttribute("color",
+          new THREE.BufferAttribute(colors, 3));
+      m.trail.geometry.attributes.position.needsUpdate = true;
+      m.trail.geometry.attributes.color.needsUpdate = true;
+      m.trail.geometry.computeBoundingSphere();
+      m.trail.visible = true;
+    } else {
+      m.trail.visible = false;
+    }
   }
   // Remove markers for aircraft that disappeared.
   for (const [hex, m] of meshes) {
     if (!seen.has(hex)) {
       planeGroup.remove(m.cone);
       planeGroup.remove(m.line);
+      planeGroup.remove(m.trail);
       m.cone.geometry.dispose();
       m.cone.material.dispose();
       m.line.geometry.dispose();
       m.line.material.dispose();
+      m.trail.geometry.dispose();
+      m.trail.material.dispose();
       meshes.delete(hex);
     }
   }
