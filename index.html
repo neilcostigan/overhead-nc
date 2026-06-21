@@ -30,6 +30,31 @@
     --cyan: #7dd3fc;
     --mono: ui-monospace, 'JetBrains Mono', Menlo, monospace;
   }
+  /* ---------- light theme overrides ---------- */
+  body.theme-light {
+    --bg: #f6f3ec;
+    --bg-elev: #ffffff;
+    --bg-elev-2: #eee9dc;
+    --line: #d4ccb8;
+    --text: #111418;
+    --text-dim: #2a2f36;
+    --text-faint: #6e7480;
+    --amber: #b56b00;
+    --amber-glow: rgba(181,107,0,0.20);
+    --green: #1d7a36;
+    --red: #b1322a;
+    --cyan: #1c6f95;
+  }
+  /* Glass overlays look better with a translucent WHITE instead of the
+   * default translucent dark when on the light theme. */
+  body.theme-light .overlay {
+    background: rgba(255,255,255,0.82) !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+  }
+  body.theme-light .analyse-panel  { background: rgba(255,255,255,0.96); }
+  body.theme-light .settings-modal { background: var(--bg-elev); }
+  body.theme-light .settings-backdrop { background: rgba(0,0,0,0.25); }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     height: 100vh;
@@ -852,6 +877,13 @@
     <div class="settings-section">
       <div class="settings-section-head">Live data</div>
       <label class="field">
+        <span>Theme</span>
+        <select id="settings-theme">
+          <option value="dark">Dark  ·  amber on slate  (default)</option>
+          <option value="light">Light  ·  paper</option>
+        </select>
+      </label>
+      <label class="field">
         <span>Units</span>
         <select id="settings-units">
           <option value="metric">Metric  ·  m, km/h, km  (default)</option>
@@ -1104,7 +1136,11 @@ const SETTINGS_DEFAULTS = {
   pollSec: 30,
   /** "metric" = m, km/h, km  (default)
    *  "aviation" = ft, kt, nm  (matches ADS-B raw values & most pilot tools) */
-  units: "metric"
+  units: "metric",
+  /** "dark" (default) or "light". Toggles a body class which re-themes
+   *  every CSS variable; the radar canvas reads its colours from the
+   *  current computed style so it follows too. */
+  theme: "dark"
 };
 
 // ---- unit format helpers ----
@@ -1131,6 +1167,12 @@ function fmtDist(nm) {
   return km < 10 ? km.toFixed(1) + " km" : Math.round(km) + " km";
 }
 function distUnitLabel() { return activeUnits() === "aviation" ? "nm" : "km"; }
+
+// ---- theme ----
+function applyTheme() {
+  const t = loadSettings().theme;
+  document.body.classList.toggle("theme-light", t === "light");
+}
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -1445,17 +1487,32 @@ function resizeCanvas() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+/** Read a CSS variable from the root computed style — lets the canvas
+ *  follow the live theme without duplicating colour constants. */
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
 function drawRadar() {
   resizeCanvas();
   const w = radar.clientWidth, h = radar.clientHeight;
   const cx = w / 2, cy = h / 2;
   const r = Math.min(w, h) / 2 - 16;
 
-  ctx.fillStyle = "#11141a";
+  const light = document.body.classList.contains("theme-light");
+  const radarBg     = light ? "#f0ece0" : "#11141a";
+  const ringColor   = light ? "rgba(180,170,140,0.55)" : "rgba(45,55,75,0.9)";
+  const labelColor  = light ? "#6e7480" : "#6c7689";
+  const amberColor  = cssVar("--amber", "#ffae1a");
+  const planeColor  = light ? "#1d7a36" : "#78dca0";
+  const labelPlane  = light ? "#3a4250" : "#b8c3d4";
+
+  ctx.fillStyle = radarBg;
   ctx.fillRect(0, 0, w, h);
 
   // range rings
-  ctx.strokeStyle = "rgba(45,55,75,0.9)";
+  ctx.strokeStyle = ringColor;
   ctx.lineWidth = 1;
   for (let i = 1; i <= 4; i++) {
     ctx.beginPath();
@@ -1468,7 +1525,7 @@ function drawRadar() {
   ctx.stroke();
 
   // labels
-  ctx.fillStyle = "#6c7689";
+  ctx.fillStyle = labelColor;
   ctx.font = "12px " + getComputedStyle(document.body).fontFamily;
   ctx.fillText("N", cx - 4, cy - r - 6);
   ctx.fillText(
@@ -1478,7 +1535,7 @@ function drawRadar() {
       cx + r - 50, cy - 6);
 
   // centre dot
-  ctx.fillStyle = "#ffae1a";
+  ctx.fillStyle = amberColor;
   ctx.beginPath(); ctx.arc(cx, cy, 3, 0, 2 * Math.PI); ctx.fill();
 
   // aircraft
@@ -1496,7 +1553,7 @@ function drawRadar() {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(((a.track || 0) - 0) * Math.PI / 180);
-    ctx.fillStyle = sel ? "#ffae1a" : "#78dca0";
+    ctx.fillStyle = sel ? amberColor : planeColor;
     ctx.beginPath();
     ctx.moveTo(0, -8); ctx.lineTo(-5, 6); ctx.lineTo(5, 6);
     ctx.closePath();
@@ -1505,7 +1562,7 @@ function drawRadar() {
 
     const cs = (a.flight || a.hex || "").trim();
     if (cs) {
-      ctx.fillStyle = sel ? "#ffae1a" : "#b8c3d4";
+      ctx.fillStyle = sel ? amberColor : labelPlane;
       ctx.fillText(cs, x + 8, y + 4);
     }
     drawnHits.push({ x, y, hex: a.hex });
@@ -1557,9 +1614,11 @@ function drawRouteLine(ctx, cx, cy, r, rc) {
   // Draw amber dashed line. Translate clip-to-disc by checking which
   // segment crosses the radar boundary; we draw all of them (extending
   // beyond the visible area is fine — canvas already crops at its edges).
+  const amberColor = cssVar("--amber", "#ffae1a");
   ctx.save();
   ctx.setLineDash([5, 4]);
-  ctx.strokeStyle = "rgba(255,174,26,0.7)";
+  ctx.strokeStyle = amberColor.startsWith("#")
+      ? hexToRgba(amberColor, 0.7) : amberColor;
   ctx.lineWidth = 1.4;
   ctx.beginPath();
   ctx.moveTo(pts[0][0], pts[0][1]);
@@ -1569,13 +1628,19 @@ function drawRouteLine(ctx, cx, cy, r, rc) {
   // Endpoint dots + labels.
   const [ox, oy] = project(rc.origin.lat, rc.origin.lon);
   const [dx, dy] = project(rc.dest.lat,   rc.dest.lon);
-  ctx.fillStyle = "#ffae1a";
+  ctx.fillStyle = amberColor;
   ctx.beginPath(); ctx.arc(ox, oy, 4, 0, 2 * Math.PI); ctx.fill();
   ctx.beginPath(); ctx.arc(dx, dy, 4, 0, 2 * Math.PI); ctx.fill();
   ctx.font = "11px " + getComputedStyle(document.body).fontFamily;
   ctx.fillText(rc.origin.code, ox + 6, oy - 5);
   ctx.fillText(rc.dest.code,   dx + 6, dy - 5);
   ctx.restore();
+}
+
+function hexToRgba(hex, a) {
+  const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return hex;
+  return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${a})`;
 }
 
 function drawList() {
@@ -2007,6 +2072,7 @@ function openSettings() {
   $("#settings-refresh").value      = String(s.analyseRefreshSec || 0);
   $("#settings-poll").value         = String(s.pollSec || 30);
   $("#settings-units").value        = s.units || "metric";
+  $("#settings-theme").value        = s.theme || "dark";
   $("#settings-msg").textContent    = "";
   $("#settings-backdrop").style.display = "";
   $("#settings-modal").style.display = "";
@@ -2026,7 +2092,8 @@ function commitSettings() {
     openaiModel: $("#settings-openai-model").value.trim(),
     analyseRefreshSec: parseInt($("#settings-refresh").value, 10) || 0,
     pollSec:           parseInt($("#settings-poll").value, 10)    || 30,
-    units:             $("#settings-units").value === "aviation" ? "aviation" : "metric"
+    units:             $("#settings-units").value === "aviation" ? "aviation" : "metric",
+    theme:             $("#settings-theme").value === "light" ? "light" : "dark"
   };
   saveSettings(s);
   // Re-apply refresh policy to a currently-open analyse panel.
@@ -2035,8 +2102,8 @@ function commitSettings() {
   }
   // Re-apply the live poll interval immediately.
   applyPollPolicy();
-  // Update zoom + range readouts to the new unit; redraw the radar so
-  // the in-canvas range label matches.
+  // Apply theme, refresh zoom+range readouts, redraw radar.
+  applyTheme();
   refreshRadiusReadout();
   drawRadar();
   const msg = $("#settings-msg");
@@ -2202,7 +2269,8 @@ async function tickIss() {
 
 // ---------- boot ----------
 window.addEventListener("resize", () => requestAnimationFrame(drawRadar));
-// Sync zoom controls with the initial RADIUS_NM in the active unit.
+// Apply theme + sync zoom controls with the initial RADIUS_NM in the active unit.
+applyTheme();
 refreshRadiusReadout();
 
 let pollTimer = null;
