@@ -789,7 +789,17 @@
   .footer a { color: var(--text-dim); text-decoration: underline; }
 </style>
 </head>
-<body>
+<body class="theme-light">
+<!-- Default-light initial paint. applyTheme() runs early and removes
+     this class if the user has saved their preference as "dark". -->
+<script>
+  try {
+    const _s = localStorage.getItem("overhead-settings-v1");
+    if (_s && JSON.parse(_s).theme === "dark") {
+      document.body.classList.remove("theme-light");
+    }
+  } catch {}
+</script>
 
 <div class="banner">
   <span class="badge">Online  ·  no DVB-T receiver</span>
@@ -879,8 +889,8 @@
       <label class="field">
         <span>Theme</span>
         <select id="settings-theme">
-          <option value="dark">Dark  ·  amber on slate  (default)</option>
-          <option value="light">Light  ·  paper</option>
+          <option value="light">Light  ·  paper  (default)</option>
+          <option value="dark">Dark  ·  amber on slate</option>
         </select>
       </label>
       <label class="field">
@@ -1137,10 +1147,10 @@ const SETTINGS_DEFAULTS = {
   /** "metric" = m, km/h, km  (default)
    *  "aviation" = ft, kt, nm  (matches ADS-B raw values & most pilot tools) */
   units: "metric",
-  /** "dark" (default) or "light". Toggles a body class which re-themes
+  /** "light" (default) or "dark". Toggles a body class which re-themes
    *  every CSS variable; the radar canvas reads its colours from the
    *  current computed style so it follows too. */
-  theme: "dark"
+  theme: "light"
 };
 
 // ---- unit format helpers ----
