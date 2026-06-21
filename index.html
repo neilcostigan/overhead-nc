@@ -538,6 +538,13 @@
   .v3d-plane-label { color: var(--text-dim); font-size: 10px; }
   .v3d-plane-label.sel { color: var(--amber); font-weight: 700; }
   .v3d-route-label { color: var(--amber); font-size: 11px; font-weight: 700; }
+  .v3d-airport-label {
+    color: var(--text-faint);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    opacity: 0.85;
+  }
+  body.theme-light .v3d-airport-label { color: #5a6068; }
 
   #view-3d .v3d-selbadge {
     position: absolute;
@@ -2599,7 +2606,12 @@ trigger.addEventListener("click", () => {
     host.style.display = "block";
     trigger.classList.add("active");
     syncFromLiveAircraft();
-    bootstrapTrails();
+    // While 3D is open, poll the antenna feed at 10 s instead of the
+    // user's regular interval — trails build ~3× faster. Restored on
+    // closeView().
+    if (window.__overhead && window.__overhead.setPollOverride) {
+      window.__overhead.setPollOverride(10);
+    }
   } else {
     closeView();
   }
@@ -2754,6 +2766,11 @@ function initScene() {
   scene.add(planeGroup);
   scene.add(routeGroup);
   scene.add(selTrailGroup);
+
+  // Geographic context — plot nearby airports on the disc as small
+  // slate dots with IATA labels. Fetched from /api/airports for the
+  // current centre. The labels read against both themes.
+  loadGroundAirports(radiusPx);
   selTrailMat = new LineMaterial({
     color: 0xffae1a, linewidth: 5, transparent: true, opacity: 0.95,
     dashed: false
@@ -2867,6 +2884,9 @@ function paintSelBadge() {
 function closeView() {
   host.style.display = "none";
   trigger.classList.remove("active");
+  if (window.__overhead && window.__overhead.clearPollOverride) {
+    window.__overhead.clearPollOverride();
+  }
 }
 
 function on3dResize() {
@@ -2902,6 +2922,42 @@ function makeLabel(text, x, y, z, className) {
   const obj = new CSS2DObject(div);
   obj.position.set(x, y, z);
   return obj;
+}
+
+/** Fetch the bundled airports within the current radar range and plot
+ *  each one as a tiny ground dot with its IATA code as a label. Adds
+ *  geographic context — you can see "we're north of Dublin" or "that
+ *  cluster is around Heathrow" at a glance. */
+async function loadGroundAirports(radiusPx) {
+  const C = window.__overhead && window.__overhead.CENTRE;
+  if (!C) return;
+  // Use a slightly larger radius than the radar disc so airports just
+  // off the edge are still visible (transit traffic context).
+  const distNm = ((window.__overhead.RADIUS_NM || 100) * 1.4);
+  try {
+    const r = await fetch(
+        `/api/airports?lat=${C.lat}&lon=${C.lon}&dist=${distNm.toFixed(0)}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d || !Array.isArray(d.airports)) return;
+    const dotGeo = new THREE.SphereGeometry(2.5, 8, 8);
+    const dotMat = new THREE.MeshBasicMaterial({
+      color: light() ? 0x6e7480 : 0x9aa6b8
+    });
+    for (const ap of d.airports) {
+      // Skip the centre — already marked.
+      if (ap.distNm < 5) continue;
+      const xy = projectAircraftXY(ap.lat, ap.lon);
+      const dot = new THREE.Mesh(dotGeo, dotMat);
+      dot.position.set(xy.x, 1, xy.z);
+      scene.add(dot);
+      // IATA label just above the dot; faint so it doesn't compete with aircraft.
+      scene.add(makeLabel(ap.iata, xy.x, 8, xy.z, "v3d-airport-label"));
+    }
+    console.log(`[3D ground] plotted ${d.airports.length} airports within ${distNm.toFixed(0)} nm of ${C.name}`);
+  } catch (e) {
+    console.warn("[3D ground] airport fetch failed:", e);
+  }
 }
 
 /** Map a distance in nautical miles to scene units (1 nm = 4 units). */
