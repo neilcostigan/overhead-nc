@@ -14,6 +14,15 @@
   };
 </script>
 <script defer src="/_vercel/insights/script.js"></script>
+<!-- Three.js (ES module) for the 3D view, loaded lazily on demand. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
 <style>
   :root {
     --bg: #05080d;
@@ -461,6 +470,59 @@
     text-align: center;
     margin-top: 2px;
   }
+  #view-3d-btn {
+    margin-top: 6px;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+  #view-3d-btn.active {
+    color: var(--amber);
+    border-color: var(--amber);
+  }
+
+  /* ---------- 3D scene container ---------- */
+  #view-3d {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--bg);
+  }
+  #view-3d canvas { display: block; width: 100%; height: 100%; }
+  #view-3d .v3d-close {
+    position: absolute;
+    top: 14px; right: 18px;
+    z-index: 60;
+    background: rgba(5,8,13,0.78);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+  body.theme-light #view-3d .v3d-close {
+    background: rgba(255,255,255,0.85);
+  }
+  #view-3d .v3d-info {
+    position: absolute;
+    top: 14px; left: 18px;
+    z-index: 60;
+    background: rgba(5,8,13,0.78);
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+    padding: 8px 14px;
+    border-radius: 4px;
+    font-size: 11px;
+    max-width: 280px;
+  }
+  body.theme-light #view-3d .v3d-info {
+    background: rgba(255,255,255,0.85);
+  }
+  #view-3d .v3d-info b { color: var(--amber); }
+  #view-3d .v3d-info .hint { color: var(--text-faint); font-size: 10px; margin-top: 4px; display: block; }
   .overlay.bl { bottom: 16px; left: 16px; }
   .overlay.br { bottom: 16px; right: 16px; font-size: 11px; color: var(--text-dim); }
 
@@ -982,7 +1044,12 @@
       <div class="zoom-readout"><b id="zoom-readout">100</b><span>nm</span></div>
       <button type="button" id="zoom-out" class="zoom-btn" title="Zoom out (longer range)">−</button>
       <div class="zoom-hint" id="zoom-hint">scroll to zoom</div>
+      <button type="button" id="view-3d-btn" class="zoom-btn" title="Switch to 3D view">3D</button>
     </div>
+
+    <!-- Fullscreen 3D scene, mounted lazily by the Three.js module on
+         first click of the 3D button. -->
+    <div id="view-3d" style="display:none;"></div>
 
     <div class="overlay br">
       <div>refresh every <b id="poll-label">5 s</b></div>
@@ -2395,6 +2462,247 @@ customCentreReady.then(() => {
   applyPollPolicy();
   setInterval(tickIss, ISS_POLL_MS);
 });
+
+// Bridge for the 3D view (lives in a separate ES module). Getters
+// reflect the live values; event lets 3D re-sync on every tick.
+window.__overhead = {
+  get aircraft()    { return aircraft; },
+  get CENTRE()      { return CENTRE; },
+  get RADIUS_NM()   { return RADIUS_NM; },
+  get selectedHex() { return selectedHex; }
+};
+// Wrap tick once to dispatch an event after each successful update.
+(function wrapTickForBridge() {
+  const _origTick = tick;
+  tick = async function (...args) {
+    const r = await _origTick.apply(this, args);
+    window.dispatchEvent(new CustomEvent("overhead:tick"));
+    return r;
+  };
+})();
 </script>
+<!-- ============ 3D view (Three.js module, lazy-init) ============ -->
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const host    = document.getElementById("view-3d");
+const trigger = document.getElementById("view-3d-btn");
+let scene, camera, renderer, controls;
+let groundDisc, centreMarker;
+const planeGroup = new THREE.Group();          // all aircraft objects
+const meshes = new Map();                       // hex → {cone, line, ring}
+let info, closeBtn, animHandle;
+let mounted = false;
+
+trigger.addEventListener("click", () => {
+  if (!mounted) initScene();
+  if (host.style.display === "none" || !host.style.display) {
+    host.style.display = "block";
+    trigger.classList.add("active");
+    syncFromLiveAircraft();
+  } else {
+    closeView();
+  }
+});
+
+function initScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(getThemeBg());
+
+  const w = window.innerWidth, h = window.innerHeight;
+  camera = new THREE.PerspectiveCamera(45, w / h, 1, 50000);
+  camera.position.set(0, 600, 1200);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(w, h);
+  host.appendChild(renderer.domElement);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 0, 0);
+  controls.maxPolarAngle = Math.PI * 0.49;     // can't tilt past horizon
+  controls.minDistance = 200;
+  controls.maxDistance = 6000;
+  controls.update();
+
+  // Ground disc — semitransparent so altitude is readable.
+  const radiusPx = scaleNm((window.__overhead && window.__overhead.RADIUS_NM) || 100);
+  const discGeo = new THREE.CircleGeometry(radiusPx, 96);
+  discGeo.rotateX(-Math.PI / 2);
+  groundDisc = new THREE.Mesh(discGeo,
+    new THREE.MeshBasicMaterial({
+      color: light() ? 0xe7e2d2 : 0x161f29,
+      transparent: true, opacity: 0.85
+    })
+  );
+  scene.add(groundDisc);
+
+  // Range rings (4 concentric circles).
+  for (let i = 1; i <= 4; i++) {
+    const ringGeo = new THREE.RingGeometry(
+      radiusPx * (i / 4) - 1.5, radiusPx * (i / 4) + 1.5, 96);
+    ringGeo.rotateX(-Math.PI / 2);
+    const ring = new THREE.Mesh(ringGeo,
+      new THREE.MeshBasicMaterial({
+        color: light() ? 0xb8af90 : 0x2d3340,
+        side: THREE.DoubleSide
+      }));
+    ring.position.y = 0.5;
+    scene.add(ring);
+  }
+
+  // Centre marker (city/airport).
+  centreMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(8, 16, 16),
+    new THREE.MeshBasicMaterial({ color: themeAmber() })
+  );
+  centreMarker.position.set(0, 4, 0);
+  scene.add(centreMarker);
+
+  // North arrow (small cone pointing forward).
+  const n = new THREE.Mesh(
+    new THREE.ConeGeometry(8, 18, 6),
+    new THREE.MeshBasicMaterial({ color: themeAmber() })
+  );
+  n.position.set(0, 4, -radiusPx - 24);
+  n.rotation.x = -Math.PI / 2;
+  scene.add(n);
+
+  scene.add(planeGroup);
+
+  // Chrome.
+  closeBtn = document.createElement("button");
+  closeBtn.className = "v3d-close";
+  closeBtn.textContent = "✕  Close 3D";
+  closeBtn.onclick = closeView;
+  host.appendChild(closeBtn);
+
+  info = document.createElement("div");
+  info.className = "v3d-info";
+  info.innerHTML =
+      `<b>3D view</b>  ·  same live data as the radar`
+    + `<span class="hint">Drag to orbit  ·  scroll to zoom  ·  right-drag to pan</span>`;
+  host.appendChild(info);
+
+  window.addEventListener("resize", on3dResize);
+  mounted = true;
+  animate();
+}
+
+function closeView() {
+  host.style.display = "none";
+  trigger.classList.remove("active");
+}
+
+function on3dResize() {
+  if (!renderer) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+
+function animate() {
+  animHandle = requestAnimationFrame(animate);
+  if (host.style.display !== "block") return;
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+/** Map a distance in nautical miles to scene units (1 nm = 4 units). */
+function scaleNm(nm) { return nm * 4; }
+/** Map altitude in feet to scene units (1000 ft = 8 units, so FL400 ≈ 320). */
+function scaleAlt(ft) { return Math.max(0, ft) * 0.008; }
+
+function light() { return document.body.classList.contains("theme-light"); }
+function getThemeBg() {
+  return getComputedStyle(document.body).getPropertyValue("--bg").trim() || "#05080d";
+}
+function themeAmber() {
+  const v = getComputedStyle(document.body).getPropertyValue("--amber").trim() || "#ffae1a";
+  return new THREE.Color(v);
+}
+function themePlane() {
+  return new THREE.Color(light() ? "#1d7a36" : "#78dca0");
+}
+function themeLineColor() {
+  return new THREE.Color(light() ? "#8a8470" : "#3a4250");
+}
+
+// Re-sync after every live data tick (event fired by the bridge in the
+// main script). Cheap when the 3D view isn't visible.
+window.addEventListener("overhead:tick", () => {
+  if (host.style.display === "block") syncFromLiveAircraft();
+});
+
+function syncFromLiveAircraft() {
+  const ac = (window.__overhead && window.__overhead.aircraft) || [];
+  // Add or update markers for each aircraft.
+  const seen = new Set();
+  for (const a of ac) {
+    if (typeof a.lat !== "number" || typeof a.lon !== "number") continue;
+    seen.add(a.hex);
+    const xy = projectAircraftXY(a.lat, a.lon);
+    const altUnits = scaleAlt(typeof a.alt_baro === "number" ? a.alt_baro : 0);
+    let m = meshes.get(a.hex);
+    if (!m) {
+      // Cone pointing up; we'll rotate to track on each frame.
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(6, 16, 8),
+        new THREE.MeshLambertMaterial({ color: themePlane() })
+      );
+      cone.castShadow = false;
+      // Drop line from ground up to cone.
+      const lineGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)
+      ]);
+      const line = new THREE.Line(lineGeo,
+        new THREE.LineBasicMaterial({ color: themeLineColor(), transparent: true, opacity: 0.5 }));
+      planeGroup.add(cone);
+      planeGroup.add(line);
+      m = { cone, line };
+      meshes.set(a.hex, m);
+    }
+    m.cone.position.set(xy.x, altUnits, xy.z);
+    // Rotate cone to point along track (track is degrees clockwise from north).
+    const trk = (a.track || 0) * Math.PI / 180;
+    m.cone.rotation.set(Math.PI / 2, 0, -trk);  // lay cone tip forward, then yaw
+    // Drop line ground → aircraft
+    const pts = [
+      new THREE.Vector3(xy.x, 0, xy.z),
+      new THREE.Vector3(xy.x, altUnits, xy.z)
+    ];
+    m.line.geometry.setFromPoints(pts);
+    // Colour: selected = amber.
+    const sel = a.hex === (window.__overhead && window.__overhead.selectedHex);
+    m.cone.material.color = sel ? themeAmber() : themePlane();
+    m.cone.material.needsUpdate = true;
+  }
+  // Remove markers for aircraft that disappeared.
+  for (const [hex, m] of meshes) {
+    if (!seen.has(hex)) {
+      planeGroup.remove(m.cone);
+      planeGroup.remove(m.line);
+      m.cone.geometry.dispose();
+      m.cone.material.dispose();
+      m.line.geometry.dispose();
+      m.line.material.dispose();
+      meshes.delete(hex);
+    }
+  }
+}
+
+/** Convert lat/lon to scene coords. Same equirectangular trick the 2D
+ *  radar uses, but on the X/Z plane (Y is altitude). North is -Z. */
+function projectAircraftXY(lat, lon) {
+  const C = (window.__overhead && window.__overhead.CENTRE) || { lat: 0, lon: 0 };
+  const dLat = lat - C.lat;
+  const dLon = (lon - C.lon) * Math.cos(C.lat * Math.PI / 180);
+  // 1 degree of latitude ≈ 60 nm; scale to scene units via scaleNm.
+  return { x: scaleNm(dLon * 60), z: -scaleNm(dLat * 60) };
+}
+</script>
+
 </body>
 </html>
